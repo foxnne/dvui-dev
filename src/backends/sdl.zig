@@ -9,12 +9,19 @@ pub const c = blk: {
         break :blk @cImport({
             @cDefine("SDL_DISABLE_OLD_NAMES", {});
             @cInclude("SDL3/SDL.h");
+
+            @cDefine("SDL_MAIN_HANDLED", {});
+            @cInclude("SDL3/SDL_main.h");
         });
     }
     break :blk @cImport({
         @cInclude("SDL2/SDL.h");
     });
 };
+
+pub var dvui_win: dvui.Window = undefined;
+pub var back: SDLBackend = undefined;
+pub var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
 
 pub const kind: dvui.enums.Backend = if (sdl3) .sdl3 else .sdl2;
 
@@ -53,7 +60,7 @@ pub const InitOptions = struct {
     hidden: bool = false,
 };
 
-pub fn initWindow(options: InitOptions) !SDLBackend {
+pub fn initWindow(options: InitOptions) !void {
     if (!sdl3) _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     // needed according to https://discourse.libsdl.org/t/possible-to-run-sdl2-headless/25665/2
     // but getting error "offscreen not available"
@@ -109,7 +116,7 @@ pub fn initWindow(options: InitOptions) !SDLBackend {
     const pma_blend = c.SDL_ComposeCustomBlendMode(c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, c.SDL_BLENDOPERATION_ADD, c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, c.SDL_BLENDOPERATION_ADD);
     _ = c.SDL_SetRenderDrawBlendMode(renderer, pma_blend);
 
-    var back = init(window, renderer);
+    back = init(window, renderer);
     back.we_own_window = true;
 
     if (sdl3) {
@@ -240,8 +247,6 @@ pub fn initWindow(options: InitOptions) !SDLBackend {
     if (options.max_size) |size| {
         _ = c.SDL_SetWindowMaximumSize(window, @as(c_int, @intFromFloat(back.initial_scale * size.w)), @as(c_int, @intFromFloat(back.initial_scale * size.h)));
     }
-
-    return back;
 }
 
 pub fn init(window: *c.SDL_Window, renderer: *c.SDL_Renderer) SDLBackend {
@@ -1037,8 +1042,23 @@ const winapi = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn AttachConsole(dwProcessId: std.os.windows.DWORD) std.os.windows.BOOL;
 } else struct {};
 
-// This must be exposed in the app's root source file.
-pub fn main() !void {
+pub fn main() u8 {
+    // For programs that provide their own entry points instead of relying on SDL's main function
+    // macro magic, 'SDL_SetMainReady()' should be called before calling 'SDL_Init()'.
+    c.SDL_SetMainReady();
+
+    // This is more or less what 'SDL_main.h' does behind the curtains.
+    const status = c.SDL_EnterAppMainCallbacks(0, null, appInit, appIterate, appEvent, appQuit);
+
+    return @bitCast(@as(i8, @truncate(status)));
+}
+
+fn appInit(appstate: ?*?*anyopaque, argc: c_int, argv: ?[*:null]?[*:0]u8) callconv(.c) c.SDL_AppResult {
+    _ = appstate; // autofix
+    _ = argc;
+    _ = argv;
+    _ = c.SDL_SetAppMetadata("dvui-demo", "0.1", "com.example.dvui-demo");
+
     const app = dvui.App.get() orelse return error.DvuiAppNotDefined;
 
     if (@import("builtin").os.tag == .windows) { // optional
@@ -1049,13 +1069,10 @@ pub fn main() !void {
 
     const init_opts = app.config.get();
 
-    var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = gpa_instance.allocator();
 
-    defer if (gpa_instance.deinit() != .ok) @panic("Memory leak on exit!");
-
     // init SDL backend (creates and owns OS window)
-    var back = try initWindow(.{
+    initWindow(.{
         .allocator = gpa,
         .size = init_opts.size,
         .min_size = init_opts.min_size,
@@ -1064,50 +1081,153 @@ pub fn main() !void {
         .title = init_opts.title,
         .icon = init_opts.icon,
         .hidden = init_opts.hidden,
-    });
-    defer back.deinit();
+    }) catch unreachable;
 
     _ = c.SDL_EnableScreenSaver();
 
     //// init dvui Window (maps onto a single OS window)
-    var win = try dvui.Window.init(@src(), gpa, back.backend(), .{});
-    defer win.deinit();
+    dvui_win = dvui.Window.init(@src(), gpa, back.backend(), .{}) catch {
+        return c.SDL_APP_FAILURE;
+    };
 
-    if (app.initFn) |initFn| initFn(&win);
-    defer if (app.deinitFn) |deinitFn| deinitFn();
+    if (app.initFn) |initFn| initFn(&dvui_win);
 
-    main_loop: while (true) {
+    return c.SDL_APP_CONTINUE; // carry on with the program!
+}
 
-        // beginWait coordinates with waitTime below to run frames only when needed
-        const nstime = win.beginWait(back.hasEvent());
+// This function runs when a new event (mouse input, keypresses, etc) occurs.
+fn appEvent(appstate: ?*anyopaque, event: ?*c.SDL_Event) callconv(.c) c.SDL_AppResult {
+    _ = appstate;
+    _ = back.addEvent(&dvui_win, event.?.*) catch return c.SDL_APP_FAILURE;
 
-        // marks the beginning of a frame for dvui, can call dvui functions after this
-        try win.begin(nstime);
+    if (event.?.type == c.SDL_EVENT_QUIT) {
+        return c.SDL_APP_SUCCESS; // end the program, reporting success to the OS.
+    }
 
-        // send all SDL events to dvui for processing
-        const quit = try back.addAllEvents(&win);
-        if (quit) break :main_loop;
+    return c.SDL_APP_CONTINUE;
+    // carry on with the program!
+}
 
-        // if dvui widgets might not cover the whole window, then need to clear
-        // the previous frame's render
-        _ = c.SDL_SetRenderDrawColor(back.renderer, 0, 0, 0, 255);
-        _ = c.SDL_RenderClear(back.renderer);
+// This function runs once per frame, and is the heart of the program.
+fn appIterate(_: ?*anyopaque) callconv(.c) c.SDL_AppResult {
+    return frame();
+    //return c.SDL_APP_CONTINUE;
+}
 
-        const res = try app.frameFn();
+fn frame() c.SDL_AppResult {
+    //const nstime = dvui_win.beginWait(back.hasEvent());
 
-        const end_micros = try win.end(.{});
+    // marks the beginning of a frame for dvui, can call dvui functions after this
+    // marks the beginning of a frame for dvui, can call dvui functions after this
 
-        back.setCursor(win.cursorRequested());
-        back.textInputRect(win.textInputRequested());
+    dvui_win.begin(1) catch return c.SDL_APP_FAILURE;
 
-        back.renderPresent();
+    // if dvui widgets might not cover the whole window, then need to clear
+    // the previous frame's render
+    _ = c.SDL_SetRenderDrawColor(back.renderer, 0, 0, 0, 255);
+    _ = c.SDL_RenderClear(back.renderer);
 
-        if (res != .ok) break :main_loop;
+    const app = dvui.App.get() orelse return c.SDL_APP_FAILURE;
 
-        const wait_event_micros = win.waitTime(end_micros, null);
+    const res = app.frameFn() catch return c.SDL_APP_FAILURE;
+
+    //_ = dvui_win.end(.{}) catch return c.SDL_APP_FAILURE;
+    const end_micros = dvui_win.end(.{}) catch return c.SDL_APP_FAILURE;
+
+    back.setCursor(dvui_win.cursorRequested());
+    back.textInputRect(dvui_win.textInputRequested());
+
+    back.renderPresent();
+
+    if (res != .ok) return c.SDL_APP_FAILURE;
+
+    if (false) {
+        const wait_event_micros = dvui_win.waitTime(end_micros, null);
         back.waitEventTimeout(wait_event_micros);
     }
+
+    return c.SDL_APP_CONTINUE; // carry on with the program!
 }
+
+// This function runs once at shutdown.
+fn appQuit(appstate: ?*anyopaque, result: c.SDL_AppResult) callconv(.c) void {
+    _ = appstate;
+    _ = result;
+
+    // SDL will clean up the window/renderer for us.
+}
+
+// This must be exposed in the app's root source file.
+// pub fn main() !void {
+//     const app = dvui.App.get() orelse return error.DvuiAppNotDefined;
+
+//     if (@import("builtin").os.tag == .windows) { // optional
+//         // on windows graphical apps have no console, so output goes to nowhere - attach it manually. related: https://github.com/ziglang/zig/issues/4196
+//         _ = winapi.AttachConsole(0xFFFFFFFF);
+//     }
+//     log.info("version: {}", .{getSDLVersion()});
+
+//     const init_opts = app.config.get();
+
+//     var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
+//     const gpa = gpa_instance.allocator();
+
+//     defer if (gpa_instance.deinit() != .ok) @panic("Memory leak on exit!");
+
+//     // init SDL backend (creates and owns OS window)
+//     var back = try initWindow(.{
+//         .allocator = gpa,
+//         .size = init_opts.size,
+//         .min_size = init_opts.min_size,
+//         .max_size = init_opts.max_size,
+//         .vsync = init_opts.vsync,
+//         .title = init_opts.title,
+//         .icon = init_opts.icon,
+//         .hidden = init_opts.hidden,
+//     });
+//     defer back.deinit();
+
+//     _ = c.SDL_EnableScreenSaver();
+
+//     //// init dvui Window (maps onto a single OS window)
+//     var win = try dvui.Window.init(@src(), gpa, back.backend(), .{});
+//     defer win.deinit();
+
+//     if (app.initFn) |initFn| initFn(&win);
+//     defer if (app.deinitFn) |deinitFn| deinitFn();
+
+//     main_loop: while (true) {
+
+//         // beginWait coordinates with waitTime below to run frames only when needed
+//         const nstime = win.beginWait(back.hasEvent());
+
+//         // marks the beginning of a frame for dvui, can call dvui functions after this
+//         try win.begin(nstime);
+
+//         // send all SDL events to dvui for processing
+//         const quit = try back.addAllEvents(&win);
+//         if (quit) break :main_loop;
+
+//         // if dvui widgets might not cover the whole window, then need to clear
+//         // the previous frame's render
+//         _ = c.SDL_SetRenderDrawColor(back.renderer, 0, 0, 0, 255);
+//         _ = c.SDL_RenderClear(back.renderer);
+
+//         const res = try app.frameFn();
+
+//         const end_micros = try win.end(.{});
+
+//         back.setCursor(win.cursorRequested());
+//         back.textInputRect(win.textInputRequested());
+
+//         back.renderPresent();
+
+//         if (res != .ok) break :main_loop;
+
+//         const wait_event_micros = win.waitTime(end_micros, null);
+//         back.waitEventTimeout(wait_event_micros);
+//     }
+// }
 
 test {
     //std.debug.print("{s} backend test\n", .{if (sdl3) "SDL3" else "SDL2"});
