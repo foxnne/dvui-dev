@@ -16,6 +16,9 @@ pub const Target = struct {
     pub fn setAsCurrent(target: Target) Target {
         var cw = dvui.currentWindow();
         const ret = cw.render_target;
+        cw.trianglesFlush() catch |err| {
+            dvui.logError(@src(), err, "Failed to flush triangles before render target switch", .{});
+        };
         cw.backend.renderTarget(target.texture) catch |err| {
             // TODO: This might be unrecoverable? Or brake rendering too badly?
             dvui.logError(@src(), err, "Failed to set render target", .{});
