@@ -2,7 +2,9 @@
 
 [Zig](https://ziglang.org) GUI toolkit for whole applications or debugging windows in existing apps/games.
 
-Tested with Zig v0.15.2 (for Zig v0.14.1, use DVUI [tag v0.3.0](https://github.com/david-vanderson/dvui/releases/tag/v0.3.0)).
+Tested with Zig v0.15.2
+* for Zig v0.14.1, use DVUI [tag v0.3.0](https://github.com/david-vanderson/dvui/releases/tag/v0.3.0))
+* for Zig master, use branch `zig16-dev`
 
 [Homepage](https://david-vanderson.github.io) · [Demo](https://david-vanderson.github.io/demo) · [Docs](https://david-vanderson.github.io/docs/) · [Devlog](https://david-vanderson.github.io/log/2026)
 
@@ -102,6 +104,16 @@ Tested with Zig v0.15.2 (for Zig v0.14.1, use DVUI [tag v0.3.0](https://github.c
       <td><code>glfw-opengl-app</code></td>
       <td>todo</td>
       <td><code>glfw-opengl-ontop</code></td>
+    </tr>
+    <tr>
+      <td>
+        <strong>wio</strong>
+        <br>
+        <sub>OpenGL on <a href="https://github.com/ypsvlq/wio"><code>wio</code></a></sub>
+      </td>
+      <td><code>wio-app</code></td>
+      <td>todo</td>
+      <td>todo</td>
     </tr>
     <tr>
       <td><strong>Web</strong></td>

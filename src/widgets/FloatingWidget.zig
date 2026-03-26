@@ -28,7 +28,7 @@ pub const InitOptions = struct {
 };
 
 init_opts: InitOptions,
-prev_rendering: bool = undefined,
+render_ftb: dvui.RenderFrontToBack = undefined,
 wd: WidgetData,
 prev_windowId: dvui.Id = undefined,
 prevClip: Rect.Physical = undefined,
@@ -77,7 +77,7 @@ pub fn init(self: *FloatingWidget, src: std.builtin.SourceLocation, init_opts: I
         }
     }
 
-    self.prev_rendering = dvui.renderingSet(false);
+    self.render_ftb.initReset();
     self.data().register();
 
     dvui.parentSet(self.widget());
@@ -94,9 +94,6 @@ pub fn init(self: *FloatingWidget, src: std.builtin.SourceLocation, init_opts: I
     dvui.clipSet(dvui.windowRectPixels());
 
     self.data().borderAndBackground(.{});
-
-    // clip to just our window (using clipSet since we are not inside our parent)
-    _ = dvui.clip(rs.r);
 
     self.scaler.init(@src(), .{ .scale = &self.scale_val }, .{ .expand = .both });
 }
@@ -133,7 +130,7 @@ pub fn deinit(self: *FloatingWidget) void {
     dvui.parentReset(self.data().id, self.data().parent);
     _ = dvui.subwindowCurrentSet(self.prev_windowId, null);
     dvui.clipSet(self.prevClip);
-    _ = dvui.renderingSet(self.prev_rendering);
+    self.render_ftb.deinit();
 }
 
 test {

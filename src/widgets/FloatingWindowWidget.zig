@@ -81,7 +81,7 @@ const DragPart = enum {
     }
 };
 
-prev_rendering: bool = undefined,
+render_ftb: dvui.RenderFrontToBack = undefined,
 wd: WidgetData,
 init_options: InitOptions,
 /// options is for our embedded BoxWidget
@@ -218,7 +218,7 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
     }
 
     self.data().register();
-    self.prev_rendering = dvui.renderingSet(false);
+    self.render_ftb.initReset();
 
     if (dvui.firstFrame(self.data().id)) {
         dvui.focusSubwindow(self.data().id, null);
@@ -284,9 +284,6 @@ pub fn drawBackground(self: *FloatingWindowWidget) void {
     // we are using BoxWidget to do border/background
     self.layout.init(@src(), .{ .dir = .vertical }, self.options.override(.{ .expand = .both }));
     self.layout.drawBackground();
-
-    // clip to just our window (layout has the margin)
-    _ = dvui.clip(self.layout.data().borderRectScale().r);
 }
 
 fn dragPart(me: Event.Mouse, rs: RectScale) DragPart {
@@ -578,7 +575,6 @@ pub fn deinit(self: *FloatingWindowWidget) void {
     }
 
     if (self.init_options.process_events_in_deinit) {
-        dvui.clipSet(dvui.windowRectPixels());
         self.processEventsAfter();
     }
 
@@ -605,7 +601,7 @@ pub fn deinit(self: *FloatingWindowWidget) void {
     dvui.currentWindow().last_focused_id_this_frame = self.prev_last_focus;
     _ = dvui.subwindowCurrentSet(self.prev_windowInfo.id, self.prev_windowInfo.rect);
     dvui.clipSet(self.prevClip);
-    _ = dvui.renderingSet(self.prev_rendering);
+    self.render_ftb.deinit();
 }
 
 test {
