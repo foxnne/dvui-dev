@@ -22,6 +22,8 @@ pub fn scrollCanvas() void {
     tl.format("Scale {d}", .{scale.*}, .{});
     tl.deinit();
 
+    _ = dvui.checkbox(@src(), &dvui.currentWindow().snap_to_pixels, "Snap to pixels", .{});
+
     var scrollArea = dvui.scrollArea(@src(), .{ .scroll_info = scroll_info }, .{ .style = .content, .min_size_content = .{ .w = 300, .h = 300 } });
     var scrollContainer = &scrollArea.scroll.?;
 
@@ -122,7 +124,10 @@ pub fn scrollCanvas() void {
             mbbox = boxRect;
         }
 
-        dvui.label(@src(), "Box {d} {d:0>3.0}x{d:0>3.0}", .{ i, b.x, b.y }, .{});
+        // Stable metrics under zoom: shape using scroll scale, rasterize at full data scale.
+        dvui.labelEx(@src(), "Box {d} {d:0>3.0}x{d:0>3.0}", .{ i, b.x, b.y }, .{
+            .ellipsize = false,
+        }, .{ .font_metrics_scale_s = scrollRectScale.s });
 
         {
             var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
@@ -318,6 +323,14 @@ pub fn scrollCanvas() void {
                     e.handle(@src(), scrollContainer.data());
                     const base: f32 = 1.01;
                     const zs = @exp(@log(base) * me.action.wheel_y);
+                    if (zs != 1.0) {
+                        zoom *= zs;
+                        zoomP = me.p;
+                    }
+                } else if (me.action == .wheel_x and me.mod.matchBind("ctrl/cmd")) {
+                    e.handle(@src(), scrollContainer.data());
+                    const base: f32 = 1.01;
+                    const zs = @exp(@log(base) * me.action.wheel_x);
                     if (zs != 1.0) {
                         zoom *= zs;
                         zoomP = me.p;

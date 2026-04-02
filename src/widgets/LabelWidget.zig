@@ -86,7 +86,7 @@ pub fn initNoFmt(self: *LabelWidget, src: std.builtin.SourceLocation, label_str:
 /// It's expected to call this when `self` is `undefined`
 pub fn initNoFmtAllocator(self: *LabelWidget, src: std.builtin.SourceLocation, label_str: []const u8, allocator: ?std.mem.Allocator, init_opts: InitOptions, opts: Options) void {
     const options = defaults.override(opts);
-    const lsize = options.fontGet().textSize(label_str);
+    const lsize = options.fontGet().textSizeWithMetrics(label_str, options.font_metrics_scale_s);
     var size = lsize;
     if (opts.rotationGet() != 0.0) {
         var t: dvui.Triangles = .{ .vertexes = &.{}, .indices = &.{}, .bounds = .{ .w = size.w, .h = size.h } };
@@ -138,15 +138,21 @@ pub fn draw(self: *LabelWidget) void {
     var r = rs.r;
     while (iter.next()) |line_slice| {
         r.x = rs.r.x;
+        const font_metrics_s = self.data().options.font_metrics_scale_s;
+        const font = self.data().options.fontGet();
         if (first) {
-            line_height_adj = self.data().options.fontGet().textHeight() * (self.data().options.fontGet().line_height_factor - 1.0);
+            const line_h0 = if (font_metrics_s) |_|
+                font.textSizeEx("M", .{ .font_metrics_scale_s = font_metrics_s }).h
+            else
+                font.textHeight();
+            line_height_adj = line_h0 * (font.line_height_factor - 1.0);
             first = false;
         } else {
             r.y += rs.s * line_height_adj;
         }
 
         var line = line_slice;
-        var tsize = self.data().options.fontGet().textSize(line);
+        var tsize = font.textSizeWithMetrics(line, font_metrics_s);
 
         // this is only about horizontal direction
         var lineRect = dvui.placeIn(self.data().contentRect(), tsize, .none, label_gravity);
@@ -156,9 +162,9 @@ pub fn draw(self: *LabelWidget) void {
         // - a lot of times the content Rect is sized based on the text width
         if (rot == 0.0 and self.init_options.ellipsize and tsize.w > (self.data().contentRect().w + 0.001)) {
             self.ellipsized = true;
-            const esize = self.data().options.fontGet().textSize(ellip);
+            const esize = font.textSizeWithMetrics(ellip, font_metrics_s);
             var endi: usize = 0;
-            tsize = self.data().options.fontGet().textSizeEx(line, .{ .max_width = self.data().contentRect().w - esize.w, .end_idx = &endi });
+            tsize = font.textSizeEx(line, .{ .max_width = self.data().contentRect().w - esize.w, .end_idx = &endi, .font_metrics_scale_s = font_metrics_s });
             line = line[0..endi];
             lineRect = dvui.placeIn(self.data().contentRect(), tsize, .none, .{ .x = 0, .y = 0 });
         }
@@ -196,12 +202,13 @@ pub fn draw(self: *LabelWidget) void {
         }
 
         dvui.renderText(.{
-            .font = self.data().options.fontGet(),
+            .font = font,
             .text = line,
             .p = render_p,
             .rs = rs,
             .color = self.data().options.color(.text),
             .rotation = rot,
+            .font_metrics_scale_s = font_metrics_s,
         }) catch |err| {
             dvui.logError(@src(), err, "Failed to render text: {s}", .{line});
         };
@@ -209,10 +216,11 @@ pub fn draw(self: *LabelWidget) void {
         if (self.ellipsized) {
             r.x += liners.r.w;
             dvui.renderText(.{
-                .font = self.data().options.fontGet(),
+                .font = font,
                 .text = ellip,
                 .rs = .{ .r = r, .s = rs.s },
                 .color = self.data().options.color(.text),
+                .font_metrics_scale_s = font_metrics_s,
             }) catch |err| {
                 dvui.logError(@src(), err, "Failed to render ellipses after text: {s}", .{line});
             };

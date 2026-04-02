@@ -121,6 +121,9 @@ pub const TextOptions = struct {
     kerning: ?bool = null,
     kern_in: ?[]u32 = null,
     ak_opts: ?AccessKit.TextRunOptions = null,
+    /// See `Options.font_metrics_scale_s`. When non-null with `snap_to_pixels` false,
+    /// shaping uses this scale; bitmaps still use `font.size * rs.s`.
+    font_metrics_scale_s: ?f32 = null,
 };
 
 /// Only renders a single line of text.  Newlines are rendered as spaces.
@@ -153,29 +156,49 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
     }
 
     const target_size = opts.font.size * opts.rs.s;
-    const sized_font = opts.font.withSize(target_size);
+    const use_split_font = !cw.snap_to_pixels and opts.font_metrics_scale_s != null;
 
-    // might get a slightly smaller font
-    var fce = try cw.fonts.getOrCreate(cw.gpa, sized_font);
-    var fce_ascent = fce.ascent;
+    var ref_fce: *Font.Cache.Entry = undefined;
+    var disp_fce: *Font.Cache.Entry = undefined;
+
+    if (use_split_font) {
+        const ref_raw = opts.font.size * opts.font_metrics_scale_s.?;
+        const ref_cache = Font.quantizePhysicalSizeForCache(ref_raw);
+        ref_fce = try cw.fonts.getOrCreate(cw.gpa, opts.font.withSize(ref_cache));
+        const disp_cache = Font.quantizePhysicalSizeForCache(target_size);
+        disp_fce = try cw.fonts.getOrCreate(cw.gpa, opts.font.withSize(disp_cache));
+    } else {
+        const cache_size = if (cw.snap_to_pixels) target_size else Font.quantizePhysicalSizeForCache(target_size);
+        ref_fce = try cw.fonts.getOrCreate(cw.gpa, opts.font.withSize(cache_size));
+        disp_fce = ref_fce;
+    }
+
+    var fce_ascent = if (cw.snap_to_pixels) ref_fce.ascent else ref_fce.ascent_frac;
     if (opts.font.line_height_factor < 1.0) {
         fce_ascent = @round(fce_ascent * opts.font.line_height_factor);
     }
+    const fce_line_h = if (cw.snap_to_pixels) ref_fce.height else ref_fce.height_frac;
 
-    // this must be synced with Font.textSizeEx()
-    const target_fraction = if (cw.snap_to_pixels) 1.0 else target_size / fce.em_height;
+    // this must be synced with Font.textSizeEx() (reference entry when split)
+    const target_fraction = if (cw.snap_to_pixels) 1.0 else target_size / ref_fce.em_height_frac;
+    const bitmap_scale: f32 = if (use_split_font) target_size / disp_fce.em_height_frac else target_fraction;
 
     // make sure the cache has all the glyphs we need
     if (opts.kern_in == null) {
         // if kern_in is given, assume we already did this when measuring the text
         var utf8it = std.unicode.Utf8View.initUnchecked(utf8_text).iterator();
         while (utf8it.nextCodepoint()) |codepoint| {
-            if (codepoint != '\n') _ = try fce.glyphInfoGetOrReplacement(cw.gpa, codepoint);
+            if (codepoint != '\n') {
+                _ = try ref_fce.glyphInfoGetOrReplacement(cw.gpa, codepoint);
+                if (use_split_font) {
+                    _ = try disp_fce.glyphInfoGetOrReplacement(cw.gpa, codepoint);
+                }
+            }
         }
     }
 
     // Generate new texture atlas if needed to update glyph uv coords
-    const texture_atlas = fce.getTextureAtlas(cw.gpa, cw.backend) catch |err| switch (err) {
+    const texture_atlas = disp_fce.getTextureAtlas(cw.gpa, cw.backend) catch |err| switch (err) {
         error.OutOfMemory => |e| return e,
         else => {
             const fname = opts.font.name(cw.arena());
@@ -197,6 +220,11 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         start.x = @round(start.x);
         start.y = @round(start.y);
     }
+
+    // Baseline in physical space from layout (reference metrics). Split-font
+    // raster uses a different cache size; per-glyph top bearing must come from
+    // the display entry or glyphs sit on different effective baselines.
+    const baseline_y = start.y + fce_ascent * target_fraction;
 
     var x = start.x;
     var max_x = start.x;
@@ -240,10 +268,14 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         // inside rendering, it doesn't affect text sizing.
         if (codepoint == '\n') codepoint = ' ';
 
-        const gi = try fce.glyphInfoGetOrReplacement(cw.gpa, codepoint);
+        const gi_tex = try disp_fce.glyphInfoGetOrReplacement(cw.gpa, codepoint);
+        const gi_met = if (use_split_font)
+            try ref_fce.glyphInfoGetOrReplacement(cw.gpa, codepoint)
+        else
+            gi_tex;
 
         if (kerning and last_codepoint != 0 and i >= next_kern_byte) {
-            const kk = fce.kern(last_codepoint, codepoint);
+            const kk = if (cw.snap_to_pixels) ref_fce.kern(last_codepoint, codepoint) else ref_fce.kernFrac(last_codepoint, codepoint);
             x += kk;
 
             if (opts.kern_in) |ki| {
@@ -257,20 +289,24 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         i += cplen;
         last_codepoint = codepoint;
 
-        if (x + gi.leftBearing * target_fraction < start.x) {
+        const adv = if (cw.snap_to_pixels) gi_met.advance else gi_met.advance_frac;
+        const lb = if (cw.snap_to_pixels) gi_met.leftBearing else gi_met.leftBearing_frac;
+        const tb = if (cw.snap_to_pixels) gi_met.topBearing else gi_met.topBearing_frac;
+
+        if (x + lb * target_fraction < start.x) {
             // Glyph extends left of the start, like the first letter being
             // "j", which has a negative left bearing.
             //
             // Shift the whole line over so it starts at x_start.  textSize()
             // includes this extra space.
 
-            //std.debug.print("moving x from {d} to {d}\n", .{ x, x_start - gi.leftBearing * target_fraction });
-            start.x -= gi.leftBearing * target_fraction;
+            //std.debug.print("moving x from {d} to {d}\n", .{ x, x_start - lb * target_fraction });
+            start.x -= lb * target_fraction;
             x = start.x;
         }
 
-        const nextx = x + gi.advance * target_fraction;
-        const leftx = x + gi.leftBearing * target_fraction;
+        const nextx = x + adv * target_fraction;
+        const leftx = x + lb * target_fraction;
 
         if (sel) {
             bytes_seen += std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
@@ -290,23 +326,35 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         }
         if (dvui.accesskit_enabled) {
             if (opts.ak_opts) |_| {
+                const ak_w: f32 = if (!cw.snap_to_pixels or gi_met.w == 0) nextx - x else gi_met.w;
                 text_info.append(cw.arena(), .{
                     .l = cplen,
-                    .w = if (gi.w == 0) nextx - x else gi.w,
+                    .w = ak_w,
                     .x = std.math.clamp(x - clipped_rect.x, 0, clipped_rect.w),
                 }) catch {};
             }
         }
 
         // don't output triangles for a zero-width glyph (space seems to be the only one)
-        if (gi.w > 0) {
+        if (gi_tex.w > 0) {
             const vtx_offset: dvui.Vertex.Index = @intCast(builder.vertexes.items.len);
             var v: Vertex = undefined;
 
+            const top_bearing_scaled = if (use_split_font)
+                gi_tex.topBearing_frac * bitmap_scale
+            else
+                tb * target_fraction;
+            const glyph_h_scaled = if (use_split_font)
+                gi_tex.h_frac * bitmap_scale
+            else
+                (if (cw.snap_to_pixels) gi_tex.h else gi_tex.h_frac) * target_fraction;
+            const g_top = baseline_y - top_bearing_scaled;
+            const g_bot = g_top + glyph_h_scaled;
+
             v.pos.x = leftx;
-            v.pos.y = start.y + (fce_ascent - gi.topBearing) * target_fraction;
+            v.pos.y = g_top;
             v.col = col;
-            v.uv = gi.uv;
+            v.uv = gi_tex.uv;
             builder.appendVertex(v);
 
             if (opts.debug) {
@@ -318,18 +366,30 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
                 //log.debug("{d} pad {d} left {d} top {d} w {d} h {d} advance {d}", .{ bytes_seen, pad, gi.f2_leftBearing, gi.f2_topBearing, gi.f2_w, gi.f2_h, gi.f2_advance });
             }
 
-            v.pos.x = x + (gi.leftBearing + gi.w) * target_fraction;
-            max_x = v.pos.x;
-            v.uv[0] = gi.uv[0] + gi.w / atlas_size.w;
-            builder.appendVertex(v);
+            if (use_split_font) {
+                v.pos.x = leftx + gi_tex.w_frac * bitmap_scale;
+                max_x = v.pos.x;
+                v.uv[0] = gi_tex.uv[0] + gi_tex.w / atlas_size.w;
+                builder.appendVertex(v);
 
-            v.pos.y = start.y + (fce_ascent - gi.topBearing + gi.h) * target_fraction;
-            sel_max_y = @max(sel_max_y, v.pos.y);
-            v.uv[1] = gi.uv[1] + gi.h / atlas_size.h;
-            builder.appendVertex(v);
+                v.pos.y = g_bot;
+                sel_max_y = @max(sel_max_y, v.pos.y);
+                v.uv[1] = gi_tex.uv[1] + gi_tex.h / atlas_size.h;
+                builder.appendVertex(v);
+            } else {
+                v.pos.x = x + (lb + gi_tex.w) * target_fraction;
+                max_x = v.pos.x;
+                v.uv[0] = gi_tex.uv[0] + gi_tex.w / atlas_size.w;
+                builder.appendVertex(v);
+
+                v.pos.y = g_bot;
+                sel_max_y = @max(sel_max_y, v.pos.y);
+                v.uv[1] = gi_tex.uv[1] + gi_tex.h / atlas_size.h;
+                builder.appendVertex(v);
+            }
 
             v.pos.x = leftx;
-            v.uv[0] = gi.uv[0];
+            v.uv[0] = gi_tex.uv[0];
             builder.appendVertex(v);
 
             // triangles must be counter-clockwise (y going down) to avoid backface culling
@@ -345,7 +405,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
     if (opts.background_color) |bgcol| {
         opts.rs.r.toPoint(.{
             .x = max_x,
-            .y = @max(sel_max_y, opts.rs.r.y + fce.height * target_fraction * opts.font.line_height_factor),
+            .y = @max(sel_max_y, opts.rs.r.y + fce_line_h * target_fraction * opts.font.line_height_factor),
         }).fill(.{}, .{ .color = bgcol, .fade = 0 });
     }
 
@@ -353,7 +413,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         Rect.Physical.fromPoint(.{ .x = sel_start_x, .y = opts.rs.r.y })
             .toPoint(.{
                 .x = sel_end_x,
-                .y = @max(sel_max_y, opts.rs.r.y + fce.height * target_fraction * opts.font.line_height_factor),
+                .y = @max(sel_max_y, opts.rs.r.y + fce_line_h * target_fraction * opts.font.line_height_factor),
             })
             .fill(.{}, .{ .color = opts.sel_color orelse dvui.themeGet().focus, .fade = 0 });
     }

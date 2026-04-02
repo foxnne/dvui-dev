@@ -161,6 +161,20 @@ pub fn hash(self: *const Font) u64 {
     return h.final();
 }
 
+/// Buckets physical pixel size for font cache keys so smooth zoom does not create
+/// a new rasterized font every frame. Skipped when `Window.snap_to_pixels` is true
+/// — see `textSizeEx` and `dvui.renderText`.
+pub fn quantizePhysicalSizeForCache(physical_px: f32) f32 {
+    if (physical_px <= 0) return 0;
+    if (physical_px < 16) {
+        return @max(1, @floor(physical_px));
+    }
+    if (physical_px < 48) {
+        return @round(physical_px);
+    }
+    return @round(physical_px / 2) * 2;
+}
+
 /// Only valid between Window.begin/end
 pub fn findSource(self: *const Font) ?Source {
     const cw = dvui.currentWindow();
@@ -263,6 +277,41 @@ pub fn textSize(self: Font, text: []const u8) Size {
     return ret;
 }
 
+/// Like `textSize` but forwards `font_metrics_scale_s` to every `textSizeEx` call.
+pub fn textSizeWithMetrics(self: Font, text: []const u8, font_metrics_scale_s: ?f32) Size {
+    if (text.len == 0) {
+        return .{ .w = 0, .h = self.textHeight() };
+    }
+
+    var ret = Size{};
+
+    var line_height_adj: f32 = 0.0;
+    var end: usize = 0;
+    while (end < text.len) {
+        if (end > 0) {
+            ret.h += line_height_adj;
+        }
+
+        var end_idx: usize = undefined;
+        var s = self.textSizeEx(text[end..], .{
+            .end_idx = &end_idx,
+            .end_metric = .before,
+            .font_metrics_scale_s = font_metrics_scale_s,
+        });
+        if (self.line_height_factor >= 1.0) {
+            line_height_adj = s.h * (self.line_height_factor - 1.0);
+        } else {
+            s.h *= self.line_height_factor;
+        }
+        ret.h += s.h;
+        ret.w = @max(ret.w, s.w);
+
+        end += end_idx;
+    }
+
+    return ret;
+}
+
 pub const EndMetric = enum {
     before, // end_idx stops before text goes past max_width
     nearest, // end_idx stops at start of character closest to max_width
@@ -275,6 +324,10 @@ pub const TextSizeOptions = struct {
     kerning: ?bool = null,
     kern_in: ?[]u32 = null,
     kern_out: ?[]u32 = null,
+    /// When false, layout uses fractional glyph metrics (must match `Window.snap_to_pixels`).
+    snap_to_pixels: bool = true,
+    /// See `Options.font_metrics_scale_s`. Must match `dvui.renderText` for the same widget.
+    font_metrics_scale_s: ?f32 = null,
 };
 
 /// textSizeEx always stops at a newline, use textSize to get multiline sizes
@@ -284,18 +337,26 @@ pub fn textSizeEx(self: Font, text: []const u8, opts: TextSizeOptions) Size {
     // ask for a font that matches the natural display pixels so we get a more
     // accurate size
     const ss = dvui.parentGet().screenRectScale(Rect{}).s;
-    const ask_size = self.size * ss;
-    const sized_font = self.withSize(ask_size);
-
+    const raw_ask = self.size * ss;
     const cw = dvui.currentWindow();
+    const use_ref_metrics = !cw.snap_to_pixels and opts.font_metrics_scale_s != null;
+    const ref_raw = self.size * (opts.font_metrics_scale_s orelse ss);
+    const ask_size: f32 = if (cw.snap_to_pixels)
+        raw_ask
+    else if (use_ref_metrics)
+        quantizePhysicalSizeForCache(ref_raw)
+    else
+        quantizePhysicalSizeForCache(raw_ask);
+    const sized_font = self.withSize(ask_size);
 
     // might give us a slightly smaller font
     const fce = dvui.fontCacheGet(sized_font) catch return .{ .w = 10, .h = 10 };
 
     // this must be synced with dvui.renderText()
-    const target_fraction = if (cw.snap_to_pixels) 1.0 / ss else self.size / fce.em_height;
+    const target_fraction = if (cw.snap_to_pixels) 1.0 / ss else self.size / fce.em_height_frac;
 
     var options = opts;
+    options.snap_to_pixels = cw.snap_to_pixels;
     if (opts.max_width) |mwidth| {
         // convert max_width into font units
         options.max_width = mwidth / target_fraction;
@@ -305,7 +366,7 @@ pub fn textSizeEx(self: Font, text: []const u8, opts: TextSizeOptions) Size {
     var s = fce.textSizeRaw(cw.gpa, text, options) catch return .{ .w = 10, .h = 10 };
 
     // do this check after calling textSizeRaw so that end_idx is set
-    if (ask_size == 0.0) return Size{};
+    if (raw_ask == 0.0) return Size{};
 
     // convert size back from font units
     return s.scale(target_fraction, Size);
@@ -405,6 +466,10 @@ pub const Cache = struct {
         height: f32, // ascender - descender
         ascent: f32, // ascender
         em_height: f32, // height of M
+        /// Continuous em height (M glyph box) in cache units; used when `snap_to_pixels` is false.
+        em_height_frac: f32,
+        ascent_frac: f32,
+        height_frac: f32,
         glyph_info: std.AutoHashMapUnmanaged(u32, GlyphInfo) = .empty,
         glyph_info_ascii: [ascii_size - ascii_start]GlyphInfo,
         texture_atlas_cache: ?Texture = null,
@@ -418,6 +483,12 @@ pub const Cache = struct {
             topBearing: f32, // vertical distance from pen to bounding box top edge
             w: f32, // width of bounding box
             h: f32, // height of bounding box
+            /// Unsnapped metrics for layout when `snap_to_pixels` is false (bitmap `w`/`h` stay integer).
+            advance_frac: f32,
+            leftBearing_frac: f32,
+            topBearing_frac: f32,
+            w_frac: f32,
+            h_frac: f32,
             uv: @Vector(2, f32),
         };
 
@@ -463,6 +534,9 @@ pub const Cache = struct {
                         .height = @trunc(ascent - descent), // cheat total a bit
                         .ascent = @trunc(ascent), // cheat ascent a bit
                         .em_height = undefined, // below
+                        .em_height_frac = undefined, // filled after ascii pregen
+                        .ascent_frac = ascent,
+                        .height_frac = ascent - descent,
                         .glyph_info_ascii = undefined,
                     };
 
@@ -501,6 +575,9 @@ pub const Cache = struct {
                     .height = 1.0, // adjusted below
                     .ascent = 1.0, // adjusted below
                     .em_height = undefined, // below
+                    .em_height_frac = undefined, // filled after ascii pregen
+                    .ascent_frac = undefined, // below
+                    .height_frac = undefined, // below
                     .glyph_info_ascii = undefined,
                 };
 
@@ -515,6 +592,8 @@ pub const Cache = struct {
                 entry.ascent = @trunc(ascender); // cheat the ascent a bit
                 entry.height = @trunc(ascender - descender); // cheat total a bit
                 entry.em_height = entry.scaleFactor * M.h;
+                entry.ascent_frac = ascender;
+                entry.height_frac = ascender - descender;
 
                 //std.debug.print("{s} ascent {d} descent {d} computed ascent {d} height {d}\n", .{fname, ascender, descender, entry.ascent, entry.height});
                 break :blk entry;
@@ -525,6 +604,9 @@ pub const Cache = struct {
             for (0..self.glyph_info_ascii.len) |i| {
                 self.glyph_info_ascii[i] = try self.glyphInfoGenerate(@intCast(i + ascii_start));
             }
+
+            self.em_height_frac = self.glyph_info_ascii['M' - ascii_start].h_frac;
+            if (self.em_height_frac <= 0) self.em_height_frac = self.em_height;
 
             //const gi = self.glyph_info_ascii['M' - ascii_start];
             //std.debug.print("{s} size {d} height {d} M left {d} top {d} wxh {d}x{d}\n", .{ fname, font.size, self.height, gi.leftBearing, gi.topBearing, gi.w, gi.h});
@@ -734,6 +816,8 @@ pub const Cache = struct {
                 //const hy = @as(f32, @floatFromInt(m.horiBearingY)) / 64.0;
                 //const h = @as(f32, @floatFromInt(m.height)) / 64.0;
                 const adv = @as(f32, @floatFromInt(m.horiAdvance)) / 64.0;
+                const gw = @as(f32, @floatFromInt(m.width)) / 64.0;
+                const gh = @as(f32, @floatFromInt(m.height)) / 64.0;
                 //std.debug.print("{c},{d},{d},{d},{d},{d},{d}\n", .{@as(u8, @intCast(codepoint)), codepoint, hx, w, hy, h, adv});
 
                 // All these values should be integers, but just in case.
@@ -741,10 +825,15 @@ pub const Cache = struct {
 
                 break :blk .{
                     .advance = @round(adv),
+                    .advance_frac = adv,
                     .leftBearing = @floor(minx),
+                    .leftBearing_frac = minx,
                     .topBearing = @floor(miny),
-                    .w = @ceil(minx + @as(f32, @floatFromInt(m.width)) / 64.0) - @floor(minx),
-                    .h = @ceil(miny + @as(f32, @floatFromInt(m.height)) / 64.0) - @floor(miny),
+                    .topBearing_frac = miny,
+                    .w = @ceil(minx + gw) - @floor(minx),
+                    .h = @ceil(miny + gh) - @floor(miny),
+                    .w_frac = gw,
+                    .h_frac = gh,
                     .uv = .{ 0, 0 },
                 };
             } else blk: {
@@ -770,10 +859,15 @@ pub const Cache = struct {
 
                 break :blk .{
                     .advance = @round(adv),
+                    .advance_frac = adv,
                     .leftBearing = @floor(x0),
+                    .leftBearing_frac = x0,
                     .topBearing = @ceil(y1),
+                    .topBearing_frac = y1,
                     .w = @ceil(x1) - @floor(x0),
                     .h = @ceil(y1) - @floor(y0),
+                    .w_frac = if (ret == 0) 0 else x1 - x0,
+                    .h_frac = if (ret == 0) 0 else y1 - y0,
                     .uv = .{ 0, 0 },
                 };
             };
@@ -799,6 +893,24 @@ pub const Cache = struct {
             }
         }
 
+        pub fn kernFrac(fce: *Entry, codepoint1: u32, codepoint2: u32) f32 {
+            if (impl == .FreeType) {
+                const index1 = c.FT_Get_Char_Index(fce.face, codepoint1);
+                const index2 = c.FT_Get_Char_Index(fce.face, codepoint2);
+                var k: c.FT_Vector = undefined;
+                FreeType.intToError(c.FT_Get_Kerning(fce.face, index1, index2, c.FT_KERNING_DEFAULT, &k)) catch |err| {
+                    dvui.log.warn("renderText freetype error {any} trying to FT_Get_Kerning font {s} codepoints {d} {d}\n", .{ err, fce.name, codepoint1, codepoint2 });
+                    k.x = 0;
+                    k.y = 0;
+                };
+
+                return @as(f32, @floatFromInt(k.x)) / 64.0;
+            } else {
+                const kern_adv: c_int = c.stbtt_GetCodepointKernAdvance(&fce.face, @as(c_int, @intCast(codepoint1)), @as(c_int, @intCast(codepoint2)));
+                return fce.scaleFactor * @as(f32, @floatFromInt(kern_adv));
+            }
+        }
+
         /// Doesn't scale the font or max_width, always stops at newlines
         ///
         /// Assumes the text is valid utf8. Will exit early with non-full
@@ -810,14 +922,17 @@ pub const Cache = struct {
             opts: Font.TextSizeOptions,
         ) std.mem.Allocator.Error!Size {
             const mwidth = opts.max_width orelse dvui.max_float_safe;
+            const snap = opts.snap_to_pixels;
+            const ascent_u = if (snap) self.ascent else self.ascent_frac;
+            const line_h = if (snap) self.height else self.height_frac;
 
             var x: f32 = 0;
             var minx: f32 = 0;
             var maxx: f32 = 0;
             var miny: f32 = 0;
-            var maxy: f32 = self.height;
+            var maxy: f32 = line_h;
             var tw: f32 = 0;
-            var th: f32 = self.height;
+            var th: f32 = line_h;
 
             var ei: usize = 0;
             var nearest_break: bool = false;
@@ -845,7 +960,7 @@ pub const Cache = struct {
                 const gi = try self.glyphInfoGetOrReplacement(gpa, codepoint);
 
                 if (kerning and last_codepoint != 0 and i >= next_kern_byte) {
-                    const kk = self.kern(last_codepoint, codepoint);
+                    const kk = if (snap) self.kern(last_codepoint, codepoint) else self.kernFrac(last_codepoint, codepoint);
                     x += kk;
 
                     if (opts.kern_in) |ki| {
@@ -871,12 +986,18 @@ pub const Cache = struct {
                 i += cplen;
                 last_codepoint = codepoint;
 
-                minx = @min(minx, x + gi.leftBearing);
-                maxx = @max(maxx, x + gi.leftBearing + gi.w);
-                maxx = @max(maxx, x + gi.advance);
+                const adv = if (snap) gi.advance else gi.advance_frac;
+                const lb = if (snap) gi.leftBearing else gi.leftBearing_frac;
+                const tb = if (snap) gi.topBearing else gi.topBearing_frac;
+                const gw = if (snap) gi.w else gi.w_frac;
+                const gh = if (snap) gi.h else gi.h_frac;
 
-                miny = @min(miny, self.ascent - gi.topBearing);
-                maxy = @max(maxy, self.ascent - gi.topBearing + gi.h);
+                minx = @min(minx, x + lb);
+                maxx = @max(maxx, x + lb + gw);
+                maxx = @max(maxx, x + adv);
+
+                miny = @min(miny, ascent_u - tb);
+                maxy = @max(maxy, ascent_u - tb + gh);
 
                 if ((maxx - minx) > mwidth) {
                     switch (opts.end_metric) {
@@ -898,7 +1019,7 @@ pub const Cache = struct {
                 // update space taken by glyph
                 tw = maxx - minx;
                 th = maxy - miny;
-                x += gi.advance;
+                x += adv;
 
                 if (nearest_break) break;
             }

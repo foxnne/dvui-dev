@@ -77,6 +77,13 @@ theme: ?*const Theme = null,
 // Use specified font
 font: ?Font = null,
 
+/// When set (and `Window.snap_to_pixels` is false), text shaping uses
+/// `font.size * font_metrics_scale_s` while glyphs still rasterize at the full
+/// widget scale (`font.size * parent RectScale.s`). Pass a parent's
+/// `screenRectScale(.{}).s` that excludes viewport zoom so metrics stay stable
+/// during smooth zoom. See `dvui.renderText` / `Font.textSizeEx`.
+font_metrics_scale_s: ?f32 = null,
+
 // only used for icons/images, rotates around center, radians clockwise
 rotation: ?f32 = null,
 
@@ -336,6 +343,7 @@ pub fn styleOnly(self: *const Options) Options {
         .color_border = self.color_border,
 
         .font = self.font,
+        .font_metrics_scale_s = self.font_metrics_scale_s,
     };
 }
 
@@ -401,6 +409,7 @@ pub fn strip(self: *const Options) Options {
 
         .font = self.font,
 
+        .font_metrics_scale_s = self.font_metrics_scale_s,
         .rotation = self.rotation,
     };
 }

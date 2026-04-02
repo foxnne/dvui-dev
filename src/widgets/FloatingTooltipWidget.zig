@@ -86,6 +86,8 @@ tt_child_shown: bool = false,
 /// Use FloatingWindowWidget for a floating window that the user can change
 /// size, move around, and adjust stacking.
 pub fn init(self: *FloatingTooltipWidget, src: std.builtin.SourceLocation, init_opts: InitOptions, opts_in: Options) void {
+    // Subwindows already use window rect scale; an extra parent-derived scale
+    // (e.g. graph zoom) made tooltip text tiny and wrap width unstable frame-to-frame.
     self.* = .{
         .wd = WidgetData.init(src, .{ .subwindow = true }, (Options{ .name = "FloatingTooltip" }).override(.{
             // passing options.rect will stop WidgetData.init from calling
@@ -93,8 +95,7 @@ pub fn init(self: *FloatingTooltipWidget, src: std.builtin.SourceLocation, init_
             // normal layout
             .rect = opts_in.rect orelse .{},
         })),
-        // get scale from parent
-        .scale_val = dvui.parentGet().screenRectScale(Rect{}).s / dvui.windowNaturalScale(),
+        .scale_val = 1.0,
         .options = defaults.themeOverride(opts_in.theme).override(opts_in),
         .init_options = init_opts,
     };
