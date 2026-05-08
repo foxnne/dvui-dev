@@ -10,9 +10,14 @@
             .hash = "SDL-2.32.6-JToi38aTEgECY2mV9iUG7dNouCbarfJ1mkzjjm53gC80",
             .lazy = true,
         },
+        // Bumped to 0.4.2+3.4.4 so dvui can forward
+        // system_include_path / system_framework_path / library_path through
+        // to SDL3 — required for explicit `-Dtarget=*-macos` cross-builds
+        // (and cross-arch macOS builds) without polluting `b.sysroot` at the
+        // parent level.  Older 0.4.0+3.4.0 only honoured `b.sysroot`.
         .sdl3 = .{
-            .url = "git+https://github.com/castholm/SDL#887fa805e40d5c7bb3955ae69b89ed566c6a0471",
-            .hash = "sdl-0.4.0+3.4.0-SDL--rq2owEZsySGuHCuVJ9naEvH3i3e_pyUIjziBtJ-",
+            .url = "git+https://github.com/david-vanderson/SDL#5bbcf665494fe14acadf50601edf6d5f74ebf96a",
+            .hash = "sdl-0.4.2+3.4.4-SDL--tB1pQFLgwvCakiiOSoZIuVaz6a6-_gOZC66AGRD",
             .lazy = true,
         },
         .freetype = .{

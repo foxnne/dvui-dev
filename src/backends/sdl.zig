@@ -856,7 +856,7 @@ pub fn textureCreate(self: *SDLBackend, pixels: [*]const u8, width: u32, height:
         c.SDL_CreateSurfaceFrom(
             @as(c_int, @intCast(width)),
             @as(c_int, @intCast(height)),
-            sdl_format,
+            @as(c.SDL_PixelFormat, @bitCast(sdl_format)),
             @constCast(pixels),
             @as(c_int, @intCast(width * format.bytesPerPixel())),
         ) orelse return logErr("SDL_CreateSurfaceFrom in textureCreate")
@@ -1461,7 +1461,7 @@ pub fn getSDLVersion() std.SemanticVersion {
     }
 }
 
-fn sdlLogCallback(userdata: ?*anyopaque, category: c_int, priority: c_uint, message: [*c]const u8) callconv(.c) void {
+fn sdlLogCallback(userdata: ?*anyopaque, category: c_int, priority: c.SDL_LogPriority, message: [*c]const u8) callconv(.c) void {
     _ = userdata;
     switch (category) {
         c.SDL_LOG_CATEGORY_APPLICATION => sdlLog(.SDL_APPLICATION, priority, message),
@@ -1484,7 +1484,7 @@ fn sdlLogCallback(userdata: ?*anyopaque, category: c_int, priority: c_uint, mess
     }
 }
 
-fn sdlLog(comptime category: @Type(.enum_literal), priority: c_uint, message: [*c]const u8) void {
+fn sdlLog(comptime category: @Type(.enum_literal), priority: c.SDL_LogPriority, message: [*c]const u8) void {
     const logger = std.log.scoped(category);
     switch (priority) {
         c.SDL_LOG_PRIORITY_VERBOSE => logger.debug("VERBOSE: {s}", .{message}),

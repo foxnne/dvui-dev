@@ -32,12 +32,25 @@ const CommonSdl = struct {
     options: *std.Build.Step.Options,
 };
 
+pub const Sdl3Paths = struct {
+    /// Forwarded as -Dsystem_include_path to the SDL3 dep (required for
+    /// explicit `-Dtarget=*-macos` builds; serves as the `usr/include` root).
+    system_include_path: ?std.Build.LazyPath = null,
+    /// Forwarded as -Dsystem_framework_path to the SDL3 dep
+    /// (`System/Library/Frameworks` on macOS).
+    system_framework_path: ?std.Build.LazyPath = null,
+    /// Forwarded as -Dlibrary_path to the SDL3 dep
+    /// (`/usr/lib` on macOS, etc.).
+    library_path: ?std.Build.LazyPath = null,
+};
+
 pub fn linkSdl3(
     b: *std.Build,
     sdl_mod: *std.Build.Module,
     sdl3_options: *std.Build.Step.Options,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    paths: Sdl3Paths,
 ) void {
     if (b.systemIntegrationOption("sdl3", .{})) {
         // SDL3 from system
@@ -46,10 +59,38 @@ pub fn linkSdl3(
     } else {
         // SDL3 compiled from source
         sdl3_options.addOption(std.SemanticVersion, "version", .{ .major = 3, .minor = 0, .patch = 0 });
-        if (b.lazyDependency("sdl3", .{
-            .target = target,
-            .optimize = optimize,
-        })) |sdl3| {
+
+        // SDL3 defaults `HAVE_GAMEINPUT_H` and `SDL_JOYSTICK_GAMEINPUT` on for
+        // any *-windows-msvc target, but `gameinput.h` ships only in the
+        // Microsoft GameInput SDK (a separate component delivered via the GDK
+        // or the Microsoft.GameInput NuGet package).  msvcup-installed Windows
+        // SDKs do not include it, so cross-compiling SDL3 to windows-msvc
+        // breaks with `'gameinput.h' file not found` and a noisy
+        // `argument unused during compilation: '-nostdinc++'` from the same
+        // `.cpp` files.  Force-disable the integration here — it's only useful
+        // for Xbox / GDK titles, which is not what dvui consumers ship.
+        // SDL3 0.4.2+3.4.4 exposes system_include_path / system_framework_path
+        // / library_path as `b.option`, which lets a parent build forward the
+        // macOS SDK paths into the SDL3 sub-build without setting `b.sysroot`
+        // at the parent level (which would skew the main exe's link line).
+        const sdl3_dep = if (target.result.os.tag == .windows and target.result.abi == .msvc)
+            b.lazyDependency("sdl3", .{
+                .target = target,
+                .optimize = optimize,
+                .system_include_path = paths.system_include_path,
+                .system_framework_path = paths.system_framework_path,
+                .library_path = paths.library_path,
+                .build_config_h_overrides = @as([]const []const u8, &.{ "-UHAVE_GAMEINPUT_H", "-USDL_JOYSTICK_GAMEINPUT" }),
+            })
+        else
+            b.lazyDependency("sdl3", .{
+                .target = target,
+                .optimize = optimize,
+                .system_include_path = paths.system_include_path,
+                .system_framework_path = paths.system_framework_path,
+                .library_path = paths.library_path,
+            });
+        if (sdl3_dep) |sdl3| {
             sdl_mod.linkLibrary(sdl3.artifact("SDL3"));
         }
     }
@@ -142,6 +183,13 @@ pub fn build(b: *std.Build) !void {
         accesskit,
     );
 
+    // SDK paths forwarded to the SDL3 sub-build.  Required for explicit
+    // `-Dtarget=*-macos` builds (and cross-arch macOS, e.g. building
+    // x86_64-macos from an arm64-macos host); harmless on other targets.
+    const sdl3_system_include_path = b.option(std.Build.LazyPath, "system_include_path", "system include path (forwarded to SDL3 sub-build)");
+    const sdl3_system_framework_path = b.option(std.Build.LazyPath, "system_framework_path", "system framework path (forwarded to SDL3 sub-build)");
+    const sdl3_library_path = b.option(std.Build.LazyPath, "library_path", "system library path (forwarded to SDL3 sub-build)");
+
     var dvui_opts = DvuiModuleOptions{
         .b = b,
         .target = target,
@@ -162,6 +210,9 @@ pub fn build(b: *std.Build) !void {
         .stb_image = stb_image_option,
         .tree_sitter = tree_sitter_option,
         .wio_unix_backends = wio_unix_backends,
+        .sdl3_system_include_path = sdl3_system_include_path,
+        .sdl3_system_framework_path = sdl3_system_framework_path,
+        .sdl3_library_path = sdl3_library_path,
     };
 
     if (back_to_build) |backend| {
@@ -422,7 +473,11 @@ pub fn buildBackend(backend: Backend, test_dvui_and_app: bool, dvui_opts_in: Dvu
             //     "callbacks",
             //     b.option(bool, "sdl3gpu-callbacks", "Use callbacks for live resizing on windows/mac"),
             // );
-            linkSdl3(b, sdl_mod, sdl3_options, target, optimize);
+            linkSdl3(b, sdl_mod, sdl3_options, target, optimize, .{
+                .system_include_path = dvui_opts.sdl3_system_include_path,
+                .system_framework_path = dvui_opts.sdl3_system_framework_path,
+                .library_path = dvui_opts.sdl3_library_path,
+            });
 
             const dvui_sdl = addDvuiModule("dvui_sdl3gpu", dvui_opts);
             // dvui_opts.addChecks(dvui_sdl, "dvui_sdl3gpu");
@@ -458,7 +513,11 @@ pub fn buildBackend(backend: Backend, test_dvui_and_app: bool, dvui_opts_in: Dvu
                 b.option(bool, "sdl3-callbacks", "Use callbacks for live resizing on windows/mac"),
             );
 
-            linkSdl3(b, sdl_mod, sdl3_options, target, optimize);
+            linkSdl3(b, sdl_mod, sdl3_options, target, optimize, .{
+                .system_include_path = dvui_opts.sdl3_system_include_path,
+                .system_framework_path = dvui_opts.sdl3_system_framework_path,
+                .library_path = dvui_opts.sdl3_library_path,
+            });
 
             const dvui_sdl = addDvuiModule("dvui_sdl3", dvui_opts);
             dvui_opts.addChecks(dvui_sdl, "dvui_sdl3");
@@ -846,6 +905,10 @@ const DvuiModuleOptions = struct {
     stb_image: ?bool,
     tree_sitter: ?bool,
     wio_unix_backends: ?[]const u8 = null,
+    /// SDK paths forwarded to the SDL3 sub-build (macOS cross-builds).
+    sdl3_system_include_path: ?std.Build.LazyPath = null,
+    sdl3_system_framework_path: ?std.Build.LazyPath = null,
+    sdl3_library_path: ?std.Build.LazyPath = null,
 
     pub const DefaultOptions = struct {
         libc: bool,
