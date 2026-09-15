@@ -503,6 +503,18 @@ pub fn init(io: std.Io, window: *c.SDL_Window, renderer: *c.SDL_Renderer) SDLBac
 extern "c" fn dvui_macos_monitor_install() void;
 extern "c" fn dvui_macos_monitor_last_scroll_precise() c_int;
 extern "c" fn dvui_macos_disable_titlebar_separator(nswindow: *anyopaque) void;
+extern "c" fn dvui_macos_window_in_live_resize(nswindow: *anyopaque) c_int;
+
+/// True while the OS is inside its own resize-tracking loop (macOS live resize). Frames then
+/// arrive through SDL_OnWindowLiveResizeUpdate from a timer nested in AppKit's tracking run
+/// loop, and waiting for events from there dequeues the tracker's own mouse events — including
+/// the mouse-up, after which the window keeps following the cursor until the next click.
+pub fn inLiveResize(self: *SDLBackend) bool {
+    if (!sdl3 or builtin.os.tag != .macos) return false;
+    const props = c.SDL_GetWindowProperties(self.window);
+    const nswindow = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse return false;
+    return dvui_macos_window_in_live_resize(nswindow) != 0;
+}
 
 const SDL_ERROR = if (sdl3) bool else c_int;
 const SDL_SUCCESS: SDL_ERROR = if (sdl3) true else 0;
@@ -1235,6 +1247,24 @@ pub fn textureUpdateSubRect(_: *SDLBackend, texture: dvui.Texture, pixels: [*]co
     }
 }
 
+/// See `dvui.Backend.support_precise_targets`: SDL3 has 16-bit float textures.
+pub const support_precise_targets = sdl3;
+
+/// `Texture.CreateOptions.precision = .high` on SDL3: a 16-bit-float-per-channel target with an
+/// explicit sRGB colorspace, so it composes like the 8-bit one. Null when the renderer refuses
+/// the format; the caller then makes the ordinary target.
+fn createPreciseTargetSdl3(self: *SDLBackend, options: dvui.Texture.CreateOptions) ?*c.SDL_Texture {
+    if (!sdl3) return null;
+    const props = c.SDL_CreateProperties();
+    defer c.SDL_DestroyProperties(props);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, c.SDL_PIXELFORMAT_RGBA64_FLOAT);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, c.SDL_TEXTUREACCESS_TARGET);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, @intCast(options.width));
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, @intCast(options.height));
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB);
+    return c.SDL_CreateTextureWithProperties(self.renderer, props);
+}
+
 pub fn textureCreateTarget(self: *SDLBackend, options: dvui.Texture.CreateOptions) !dvui.TextureTarget {
     if (!sdl3) switch (options.interpolation) {
         .nearest => _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "nearest"),
@@ -1246,7 +1276,8 @@ pub fn textureCreateTarget(self: *SDLBackend, options: dvui.Texture.CreateOption
         return dvui.Backend.TextureError.NotImplemented;
     };
 
-    const texture = c.SDL_CreateTexture(
+    const precise: ?*c.SDL_Texture = if (options.precision == .high) self.createPreciseTargetSdl3(options) else null;
+    const texture = precise orelse c.SDL_CreateTexture(
         self.renderer,
         if (comptime sdl3) @as(c.SDL_PixelFormat, @intCast(sdl_format)) else sdl_format,
         c.SDL_TEXTUREACCESS_TARGET,
@@ -1300,6 +1331,44 @@ pub fn textureClearTarget(self: *SDLBackend, texture: dvui.TextureTarget) void {
         c.SDL_RenderFillRect(self.renderer, null),
         "SDL_RenderFillRect in textureClearTarget",
     ) catch return;
+}
+
+/// See `dvui.Backend.textureBlend`.
+pub fn textureBlend(_: *SDLBackend, texture: dvui.Texture, blend: dvui.Backend.TextureBlend) !void {
+    const mode = switch (blend) {
+        .over => c.SDL_ComposeCustomBlendMode(c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, c.SDL_BLENDOPERATION_ADD, c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, c.SDL_BLENDOPERATION_ADD),
+        .add => c.SDL_ComposeCustomBlendMode(c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDOPERATION_ADD, c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDFACTOR_ONE, c.SDL_BLENDOPERATION_ADD),
+        .copy => c.SDL_BLENDMODE_NONE,
+    };
+    try toErr(c.SDL_SetTextureBlendMode(@ptrCast(@alignCast(texture.ptr)), mode), "SDL_SetTextureBlendMode in textureBlend");
+}
+
+/// Read back a rectangle of the *current* render target (the window, unless a target is bound)
+/// as straight RGBA into `pixels_out` (`rect.w * rect.h * 4` bytes). What has been drawn so far
+/// this frame — a backdrop that wants "what is under me" without replaying the command queue.
+/// SDL3 only.
+pub fn readPixels(self: *SDLBackend, rect: dvui.Rect.Physical, pixels_out: [*]u8) !void {
+    if (!sdl3) return dvui.Backend.TextureError.TextureRead;
+    const r: c.SDL_Rect = .{ .x = @intFromFloat(rect.x), .y = @intFromFloat(rect.y), .w = @intFromFloat(rect.w), .h = @intFromFloat(rect.h) };
+    var surface: *c.SDL_Surface = c.SDL_RenderReadPixels(self.renderer, &r) orelse
+        logErr("SDL_RenderReadPixels in readPixels") catch
+        return dvui.Backend.TextureError.TextureRead;
+    defer c.SDL_DestroySurface(surface);
+    if (surface.*.w != r.w or surface.*.h != r.h) return dvui.Backend.TextureError.TextureRead;
+    if (surface.*.format != c.SDL_PIXELFORMAT_ABGR8888) {
+        const converted = c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_ABGR8888) orelse
+            logErr("SDL_ConvertSurface in readPixels") catch
+            return dvui.Backend.TextureError.TextureRead;
+        c.SDL_DestroySurface(surface);
+        surface = converted;
+    }
+    const w: usize = @intCast(r.w);
+    const h: usize = @intCast(r.h);
+    const pitch: usize = @intCast(surface.*.pitch);
+    const src: [*]const u8 = @ptrCast(surface.*.pixels);
+    for (0..h) |y| {
+        @memcpy(pixels_out[y * w * 4 .. (y + 1) * w * 4], src[y * pitch .. y * pitch + w * 4]);
+    }
 }
 
 pub fn textureReadTarget(self: *SDLBackend, texture: dvui.TextureTarget, pixels_out: [*]u8) !void {
@@ -2406,7 +2475,11 @@ fn appIterate(_: ?*anyopaque) callconv(.c) c.SDL_AppResult {
     // either never recovers or recovers after many seconds.
     // NOTE: on iOS, SDL_WaitEventTimeout stalls in UITrackingRunLoopMode during a
     // touch, so we throttle via ios_next_frame_ns above instead of waiting here.
-    if (appState.no_wait or appState.have_resize or builtin.target.os.tag == .ios) {
+    //
+    // have_resize is only a heuristic: SDL's live-resize timer calls us on every tick
+    // whether or not the size changed, so a tick where the mouse paused has no resize
+    // event and would fall through to the wait. Ask the OS directly where it can tell us.
+    if (appState.no_wait or appState.have_resize or appState.back.inLiveResize() or builtin.target.os.tag == .ios) {
         appState.have_resize = false;
         if (builtin.target.os.tag == .ios) {
             appState.ios_next_frame_ns = appState.win.backend.nanoTime() + @as(i128, wait_event_micros) * 1000;

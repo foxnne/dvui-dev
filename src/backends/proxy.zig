@@ -119,6 +119,15 @@ pub fn textureCreateTarget(_: *ProxyBackend, options: dvui.Texture.CreateOptions
     return proxy_bridge.targetFromDesc(desc) catch error.TextureCreate;
 }
 
+pub fn textureBlend(_: *ProxyBackend, texture: dvui.Texture, blend: dvui.Backend.TextureBlend) !void {
+    const b = proxy_bridge.bridge orelse return error.NotImplemented;
+    var desc = proxy_bridge.textureDescFrom(texture);
+    if (b.texture_blend(bridgeCtx(b), &desc, @intFromEnum(blend)) == 0) return error.NotImplemented;
+}
+
+/// The host behind the bridge decides; dvui's own SDL3 host does.
+pub const support_precise_targets = true;
+
 pub fn textureClearTarget(_: *ProxyBackend, target: dvui.TextureTarget) void {
     const b = bridgeGeneric() catch return;
     var desc = proxy_bridge.textureDescFromTarget(target);
