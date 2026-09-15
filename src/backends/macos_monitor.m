@@ -44,3 +44,10 @@ void dvui_macos_disable_titlebar_separator(void *nswindow) {
     }
 }
 
+
+/* 1 while AppKit's resize tracker owns the main run loop (between
+ * NSWindowWillStartLiveResizeNotification and NSWindowDidEndLiveResizeNotification).
+ * The SDL backend must not wait for events from inside that loop. */
+int dvui_macos_window_in_live_resize(void *nswindow) {
+    return ((NSWindow *)nswindow).inLiveResize ? 1 : 0;
+}

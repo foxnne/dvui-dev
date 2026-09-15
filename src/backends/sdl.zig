@@ -503,6 +503,18 @@ pub fn init(io: std.Io, window: *c.SDL_Window, renderer: *c.SDL_Renderer) SDLBac
 extern "c" fn dvui_macos_monitor_install() void;
 extern "c" fn dvui_macos_monitor_last_scroll_precise() c_int;
 extern "c" fn dvui_macos_disable_titlebar_separator(nswindow: *anyopaque) void;
+extern "c" fn dvui_macos_window_in_live_resize(nswindow: *anyopaque) c_int;
+
+/// True while the OS is inside its own resize-tracking loop (macOS live resize). Frames then
+/// arrive through SDL_OnWindowLiveResizeUpdate from a timer nested in AppKit's tracking run
+/// loop, and waiting for events from there dequeues the tracker's own mouse events — including
+/// the mouse-up, after which the window keeps following the cursor until the next click.
+pub fn inLiveResize(self: *SDLBackend) bool {
+    if (!sdl3 or builtin.os.tag != .macos) return false;
+    const props = c.SDL_GetWindowProperties(self.window);
+    const nswindow = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse return false;
+    return dvui_macos_window_in_live_resize(nswindow) != 0;
+}
 
 const SDL_ERROR = if (sdl3) bool else c_int;
 const SDL_SUCCESS: SDL_ERROR = if (sdl3) true else 0;
@@ -2406,7 +2418,11 @@ fn appIterate(_: ?*anyopaque) callconv(.c) c.SDL_AppResult {
     // either never recovers or recovers after many seconds.
     // NOTE: on iOS, SDL_WaitEventTimeout stalls in UITrackingRunLoopMode during a
     // touch, so we throttle via ios_next_frame_ns above instead of waiting here.
-    if (appState.no_wait or appState.have_resize or builtin.target.os.tag == .ios) {
+    //
+    // have_resize is only a heuristic: SDL's live-resize timer calls us on every tick
+    // whether or not the size changed, so a tick where the mouse paused has no resize
+    // event and would fall through to the wait. Ask the OS directly where it can tell us.
+    if (appState.no_wait or appState.have_resize or appState.back.inLiveResize() or builtin.target.os.tag == .ios) {
         appState.have_resize = false;
         if (builtin.target.os.tag == .ios) {
             appState.ios_next_frame_ns = appState.win.backend.nanoTime() + @as(i128, wait_event_micros) * 1000;
