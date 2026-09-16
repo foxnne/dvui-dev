@@ -59,8 +59,33 @@ pub const RenderCommand = struct {
             tri: Triangles,
             tex: ?Texture,
         },
+        /// Code that runs when the queue is replayed, with rendering immediate and the clip,
+        /// alpha, snap and kerning of the moment it was queued. For work that must see what
+        /// the queues before it drew — a backdrop that blurs the windows under its own — or
+        /// that only knows what to draw at that point. `deferRender` queues one.
+        custom: Custom,
+    };
+
+    pub const Custom = struct {
+        ctx: ?*anyopaque,
+        draw: *const fn (ctx: ?*anyopaque) void,
     };
 };
+
+/// Queue `draw` to run when the current subwindow's commands are replayed (at the end of the
+/// frame, in subwindow order), or run it now when rendering is immediate. Inside, the render
+/// functions draw immediately — `renderTexture`, `Path.fill` and the rest go straight to the
+/// target — under the clip and alpha in effect here.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn deferRender(ctx: ?*anyopaque, draw: *const fn (ctx: ?*anyopaque) void) void {
+    const cw = dvui.currentWindow();
+    if (!cw.render_target.rendering) {
+        cw.addRenderCommand(.{ .custom = .{ .ctx = ctx, .draw = draw } }, false);
+        return;
+    }
+    draw(ctx);
+}
 
 /// Rendered `Triangles` taking in to account the current clip rect
 /// and deferred rendering through render targets.
@@ -252,6 +277,8 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         next_kern_idx += 1;
     }
 
+    const clip = dvui.clipGet();
+
     var i: usize = 0;
     while (i < opts.text.len) {
         const cplen = std.unicode.utf8ByteSequenceLength(opts.text[i]) catch unreachable;
@@ -322,8 +349,16 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             }
         }
 
+        // Glyphs that land entirely outside the clip rect horizontally can't produce a visible
+        // pixel, and a single unwrapped line can be enormous (minified JSON on one line), where
+        // four vertices per glyph runs out of `Vertex.Index` long before any of them would have
+        // been drawn. Everything above still runs, so x, kerning and selection bookkeeping stay
+        // exact; only the quads are dropped. Rotation can swing an off-clip glyph back into
+        // view, so it opts out.
+        const off_clip = opts.rotation == 0 and (leftx > clip.x + clip.w or nextx < clip.x);
+
         // don't output triangles for a zero-width glyph (space seems to be the only one)
-        if (gi.w > 0) {
+        if (gi.w > 0 and !off_clip) {
             const vtx_offset: dvui.Vertex.Index = @intCast(builder.vertexes.items.len);
             var v: Vertex = undefined;
 
