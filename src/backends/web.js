@@ -185,6 +185,11 @@ export class Dvui {
     newTextureId = 1;
 
     /** @returns {[WebGLTexture, number, number] | null} */
+    // The modifier bits dvui reads (web_mod_code_to_dvui), from any keyboard or mouse event.
+    modCode(ev) {
+        return (ev.metaKey << 3) + (ev.altKey << 2) + (ev.ctrlKey << 1) + (ev.shiftKey << 0);
+    }
+
     createTarget(width, height, interp, wrap_u, wrap_v, precise) {
         const texture = this.gl.createTexture();
         const id = this.newTextureId;
@@ -1370,17 +1375,20 @@ export class Dvui {
                 this.gl.drawingBufferWidth;
             let y = (ev.clientY - rect.top) / (rect.bottom - rect.top) *
                 this.gl.drawingBufferHeight;
-            this.instance.exports.add_event(1, 0, 0, x, y);
+            // The event's own modifier state, not the last key event's: a modifier whose keyup
+            // was lost (cmd-tab away, a popup taking focus) would otherwise stick to every
+            // click until the next key event.
+            this.instance.exports.add_event(1, this.modCode(ev), 0, x, y);
             this.requestRender();
         });
         this.gl.canvas.addEventListener("mousedown", (ev) => {
             if (this.stopped) return;
-            this.instance.exports.add_event(2, ev.button, 0, 0, 0);
+            this.instance.exports.add_event(2, ev.button, this.modCode(ev), 0, 0);
             this.requestRender();
         });
         this.gl.canvas.addEventListener("mouseup", (ev) => {
             if (this.stopped) return;
-            this.instance.exports.add_event(3, ev.button, 0, 0, 0);
+            this.instance.exports.add_event(3, ev.button, this.modCode(ev), 0, 0);
             this.requestRender();
         });
         this.gl.canvas.addEventListener("wheel", (ev) => {

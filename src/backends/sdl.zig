@@ -1608,6 +1608,10 @@ pub fn addEvent(self: *SDLBackend, win: *dvui.Window, event: c.SDL_Event) !bool 
                 return false;
             }
 
+            // The live modifier state, not the last key event's: a modifier whose keyup went
+            // to another app (cmd-tab, a browser opened for sign-in) would otherwise stick to
+            // every click until the next key event.
+            win.modifiers = SDL_keymod_to_dvui(@intCast(c.SDL_GetModState()));
             return try win.addEventMouseButton(SDL_mouse_button_to_dvui(event.button.button), .press);
         },
         if (sdl3) c.SDL_EVENT_MOUSE_BUTTON_UP else c.SDL_MOUSEBUTTONUP => {
@@ -1623,6 +1627,7 @@ pub fn addEvent(self: *SDLBackend, win: *dvui.Window, event: c.SDL_Event) !bool 
                 return false;
             }
 
+            win.modifiers = SDL_keymod_to_dvui(@intCast(c.SDL_GetModState()));
             return try win.addEventMouseButton(SDL_mouse_button_to_dvui(event.button.button), .release);
         },
         if (sdl3) c.SDL_EVENT_MOUSE_WHEEL else c.SDL_MOUSEWHEEL => {

@@ -286,9 +286,20 @@ fn add_event_raw(w: *dvui.Window, which: u8, int1: u32, int2: u32, float1: f32, 
     //    wasm.wasm_panic(msg.ptr, msg.len);
     //};
     switch (which) {
-        1 => _ = try w.addEventMouseMotion(.{ .pt = .{ .x = float1, .y = float2 } }),
-        2 => _ = try w.addEventMouseButton(buttonFromJS(int1), .press),
-        3 => _ = try w.addEventMouseButton(buttonFromJS(int1), .release),
+        // Mouse events carry the browser's own modifier state (see web.js): the modifiers
+        // dvui remembers from the last key event go stale when a keyup is lost.
+        1 => {
+            w.modifiers = web_mod_code_to_dvui(@intCast(int1));
+            _ = try w.addEventMouseMotion(.{ .pt = .{ .x = float1, .y = float2 } });
+        },
+        2 => {
+            w.modifiers = web_mod_code_to_dvui(@intCast(int2));
+            _ = try w.addEventMouseButton(buttonFromJS(int1), .press);
+        },
+        3 => {
+            w.modifiers = web_mod_code_to_dvui(@intCast(int2));
+            _ = try w.addEventMouseButton(buttonFromJS(int1), .release);
+        },
         4 => _ = try w.addEventMouseWheel(float1 * dvui.scroll_speed, if (int1 > 0) .vertical else .horizontal, if (int2 == 0) .mouse else .trackpad),
         5 => {
             const str = @as([*]u8, @ptrFromInt(int1))[0..int2];
