@@ -72,12 +72,25 @@ pub const CapturedFrame = struct {
 };
 
 /// One widget's resolved state, recorded for `dumpFrame`. The rects are physical
-/// (screen) pixels. `name` is `gpa`-duplicated; `src_*` point at static strings.
+/// (screen) pixels. `name`, `tag`, `label`'s text and `text` are
+/// `gpa`-duplicated; `src_*` point at static strings.
 pub const CapturedWidget = struct {
     id: dvui.Id,
     /// Equals `id` for the window root (emitted as null parent in the dump).
     parent_id: dvui.Id,
     name: ?[]const u8,
+    /// `Options.tag`: the name a test or script finds this widget by.
+    tag: ?[]const u8 = null,
+    /// `Options.role`: what kind of widget this is to assistive technology.
+    role: ?dvui.AccessKit.Role = null,
+    /// `Options.label`, as given: text, another widget's id, or the label
+    /// widget before or after this one.
+    label: ?Options.LabelOpts = null,
+    /// The text this widget shows as its own, for a widget that has one (a
+    /// label's string). With `role` and `label` it is what names a widget
+    /// without accesskit: a button's name is the text of the label inside it.
+    /// Recorded by the widget after `register` (`captureText`).
+    text: ?[]const u8 = null,
     src_file: []const u8,
     src_fn: []const u8,
     src_line: u32,
@@ -205,8 +218,18 @@ pub fn captureScopeEnd(self: *Debug) void {
 }
 
 fn freeFrame(gpa: std.mem.Allocator, frame: *CapturedFrame) void {
-    for (frame.widgets.items) |w| if (w.name) |name| gpa.free(name);
+    for (frame.widgets.items) |*w| freeWidget(gpa, w);
     frame.widgets.deinit(gpa);
+}
+
+fn freeWidget(gpa: std.mem.Allocator, w: *const CapturedWidget) void {
+    if (w.name) |name| gpa.free(name);
+    if (w.tag) |tag| gpa.free(tag);
+    if (w.label) |l| switch (l) {
+        .text => |t| gpa.free(t),
+        else => {},
+    };
+    if (w.text) |text| gpa.free(text);
 }
 
 /// Begin recording a new frame (called from `reset`). Enforces `capture_max` by
@@ -236,11 +259,16 @@ fn startFrameCapture(self: *Debug, gpa: std.mem.Allocator) void {
 pub fn captureWidget(self: *Debug, gpa: std.mem.Allocator, wd: *const dvui.WidgetData) void {
     if (self.frames.items.len == 0) return;
     const frame = &self.frames.items[self.frames.items.len - 1];
-    const name: ?[]const u8 = if (wd.options.name) |n| (gpa.dupe(u8, n) catch null) else null;
-    frame.widgets.append(gpa, .{
+    var w: CapturedWidget = .{
         .id = wd.id,
         .parent_id = wd.parent.data().id,
-        .name = name,
+        .name = if (wd.options.name) |n| (gpa.dupe(u8, n) catch null) else null,
+        .tag = if (wd.options.tag) |t| (gpa.dupe(u8, t) catch null) else null,
+        .role = wd.options.role,
+        .label = if (wd.options.label) |l| switch (l) {
+            .text => |t| if (gpa.dupe(u8, t)) |copy| .{ .text = copy } else |_| null,
+            else => l,
+        } else null,
         .src_file = wd.src.file,
         .src_fn = wd.src.fn_name,
         .src_line = wd.src.line,
@@ -259,10 +287,29 @@ pub fn captureWidget(self: *Debug, gpa: std.mem.Allocator, wd: *const dvui.Widge
         .focused = wd.id == dvui.focusedWidgetId(),
         .active = dvui.captured(wd.id),
         .visible = wd.visible(),
-    }) catch |err| {
-        if (name) |n| gpa.free(n);
+    };
+    frame.widgets.append(gpa, w) catch |err| {
+        freeWidget(gpa, &w);
         dvui.logError(@src(), err, "Debug.captureWidget could not append", .{});
     };
+}
+
+/// Record the text widget `id` shows as its own (`CapturedWidget.text`), after
+/// its `register`. Called by widgets that show text of their own while
+/// `capturing`; does nothing if `id` was not captured this frame.
+pub fn captureText(self: *Debug, gpa: std.mem.Allocator, id: dvui.Id, text: []const u8) void {
+    if (self.frames.items.len == 0) return;
+    const widgets = self.frames.items[self.frames.items.len - 1].widgets.items;
+    // The widget registered moments ago, so it is at or near the end.
+    var i = widgets.len;
+    while (i > 0) {
+        i -= 1;
+        const w = &widgets[i];
+        if (w.id != id) continue;
+        if (w.text) |old| gpa.free(old);
+        w.text = gpa.dupe(u8, text) catch null;
+        return;
+    }
 }
 
 /// Emit the most recent captured frame as JSON: `{"widgets":[...]}`. `nested`
@@ -400,6 +447,10 @@ fn dumpFields(writer: *std.Io.Writer, n: *const CapturedWidget) std.Io.Writer.Er
     try writer.writeAll(",\"parent_id\":");
     if (n.parent_id == n.id) try writer.writeAll("null") else try dumpValue(writer, n.parent_id);
     try dumpLabeled(writer, "name", n.name);
+    try dumpLabeled(writer, "tag", n.tag);
+    try dumpLabeled(writer, "role", n.role);
+    try dumpLabeled(writer, "label", n.label);
+    try dumpLabeled(writer, "text", n.text);
     try writer.writeAll(",\"src\":{\"file\":");
     try dumpString(writer, n.src_file);
     try writer.writeAll(",\"fn\":");
@@ -430,6 +481,10 @@ fn dumpFields(writer: *std.Io.Writer, n: *const CapturedWidget) std.Io.Writer.Er
 fn widgetChanged(a: *const CapturedWidget, b: *const CapturedWidget) bool {
     return a.parent_id != b.parent_id or
         !optStrEql(a.name, b.name) or
+        !optStrEql(a.tag, b.tag) or
+        !std.meta.eql(a.role, b.role) or
+        !labelEql(a.label, b.label) or
+        !optStrEql(a.text, b.text) or
         !std.meta.eql(a.rect_border, b.rect_border) or
         !std.meta.eql(a.rect_content, b.rect_content) or
         !std.meta.eql(a.rect_background, b.rect_background) or
@@ -452,6 +507,10 @@ fn dumpWidgetChanges(writer: *std.Io.Writer, a: *const CapturedWidget, b: *const
     var first = true;
     try diffField(writer, &first, "parent_id", a.parent_id, b.parent_id);
     if (!optStrEql(a.name, b.name)) try diffEmit(writer, &first, "name", a.name, b.name);
+    if (!optStrEql(a.tag, b.tag)) try diffEmit(writer, &first, "tag", a.tag, b.tag);
+    try diffField(writer, &first, "role", a.role, b.role);
+    if (!labelEql(a.label, b.label)) try diffEmit(writer, &first, "label", a.label, b.label);
+    if (!optStrEql(a.text, b.text)) try diffEmit(writer, &first, "text", a.text, b.text);
     try diffField(writer, &first, "rect_border", a.rect_border, b.rect_border);
     try diffField(writer, &first, "rect_content", a.rect_content, b.rect_content);
     try diffField(writer, &first, "rect_background", a.rect_background, b.rect_background);
@@ -492,6 +551,15 @@ fn optStrEql(a: ?[]const u8, b: ?[]const u8) bool {
     return std.mem.eql(u8, a.?, b.?);
 }
 
+fn labelEql(a: ?Options.LabelOpts, b: ?Options.LabelOpts) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return switch (a.?) {
+        .text => |t| b.? == .text and std.mem.eql(u8, t, b.?.text),
+        else => std.meta.eql(a.?, b.?),
+    };
+}
+
 fn dumpLabeled(writer: *std.Io.Writer, comptime label: []const u8, v: anytype) std.Io.Writer.Error!void {
     try writer.writeAll(",\"" ++ label ++ "\":");
     try dumpValue(writer, v);
@@ -517,6 +585,28 @@ fn dumpValue(writer: *std.Io.Writer, v: anytype) std.Io.Writer.Error!void {
         try writer.print("{}", .{v});
     } else if (T == ?[]const u8) {
         if (v) |s| try dumpString(writer, s) else try writer.writeAll("null");
+    } else if (T == ?dvui.AccessKit.Role) {
+        if (v) |r| try writer.print("\"{s}\"", .{@tagName(r)}) else try writer.writeAll("null");
+    } else if (T == ?Options.LabelOpts) {
+        const l = v orelse return writer.writeAll("null");
+        switch (l) {
+            .text => |t| {
+                try writer.writeAll("{\"text\":");
+                try dumpString(writer, t);
+                try writer.writeByte('}');
+            },
+            .by_id => |id| {
+                try writer.writeAll("{\"by_id\":");
+                try dumpValue(writer, id);
+                try writer.writeByte('}');
+            },
+            .for_id => |id| {
+                try writer.writeAll("{\"for_id\":");
+                try dumpValue(writer, id);
+                try writer.writeByte('}');
+            },
+            .label_widget => |dir| try writer.print("{{\"label_widget\":\"{s}\"}}", .{@tagName(dir)}),
+        }
     } else switch (@typeInfo(T)) {
         .@"enum" => try writer.print("\"{s}\"", .{@tagName(v)}),
         else => @compileError("dumpValue: unsupported type " ++ @typeName(T)),
@@ -1856,6 +1946,56 @@ test "dumpFrame captures the widget tree as JSON" {
     const flat = w2.buffered();
     try std.testing.expect(std.mem.indexOf(u8, flat, "\"children\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, flat, "\"parent_id\":") != null);
+}
+
+test "dumpFrame records tag, role, label and a label's text" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+
+    const frame = struct {
+        fn frame() !dvui.App.Result {
+            var box = dvui.box(@src(), .{}, .{ .expand = .both });
+            defer box.deinit();
+            _ = dvui.button(@src(), "Save", .{}, .{ .tag = "save" });
+            // No text of its own: named by its label.
+            var icon_box = dvui.box(@src(), .{}, .{ .role = .button, .label = .{ .text = "Close" }, .tag = "close" });
+            icon_box.deinit();
+            return .ok;
+        }
+    }.frame;
+
+    try dvui.testing.settle(frame);
+    dvui.debug.captureFrame();
+    _ = try dvui.testing.step(frame);
+    _ = try dvui.testing.step(frame);
+
+    const widgets = dvui.debug.lastCapture().?.widgets.items;
+    var save: ?*const CapturedWidget = null;
+    var close: ?*const CapturedWidget = null;
+    for (widgets) |*w| {
+        if (w.tag) |tag| {
+            if (std.mem.eql(u8, tag, "save")) save = w;
+            if (std.mem.eql(u8, tag, "close")) close = w;
+        }
+    }
+    // The button names itself by the label inside it.
+    try std.testing.expectEqual(dvui.AccessKit.Role.button, save.?.role.?);
+    const save_label = for (widgets) |*w| {
+        if (w.parent_id == save.?.id and w.role == .label) break w;
+    } else return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Save", save_label.text.?);
+    // The icon button names itself with its label option.
+    try std.testing.expectEqual(dvui.AccessKit.Role.button, close.?.role.?);
+    try std.testing.expectEqualStrings("Close", close.?.label.?.text);
+
+    const buf = try std.testing.allocator.alloc(u8, 64 * 1024);
+    defer std.testing.allocator.free(buf);
+    var w = std.Io.Writer.fixed(buf);
+    try dvui.debug.dumpFrame(&w, .{ .shape = .flat });
+    const flat = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, flat, "\"tag\":\"save\",\"role\":\"button\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "\"role\":\"label\",\"label\":null,\"text\":\"Save\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "\"label\":{\"text\":\"Close\"}") != null);
 }
 
 /// Frame counter for `diffFrame`, which renders slightly different content on

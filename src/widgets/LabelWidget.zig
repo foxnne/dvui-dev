@@ -109,6 +109,7 @@ pub fn initNoFmtAllocator(self: *LabelWidget, src: std.builtin.SourceLocation, l
     };
 
     self.data().register();
+    if (dvui.debug.capturing) dvui.debug.captureText(dvui.currentWindow().gpa, self.data().id, self.label_str);
     self.data().borderAndBackground(.{});
 
     if (self.data().accesskit_node()) |ak_node| {
