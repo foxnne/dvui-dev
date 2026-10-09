@@ -154,6 +154,11 @@ _lifo_arena: std.heap.ArenaAllocator,
 _widget_stack: WidgetStack,
 render_target: dvui.RenderTarget = .{ .texture = null, .offset = .{} },
 end_rendering_done: bool = false,
+/// Set by `drawRetained`, so it runs once a frame.
+draw_retained_done: bool = false,
+/// `backend.nanoTime` when the frame stopped building widgets (start of
+/// the render phase).  Set by `drawRetained`.
+ft_render_start: i128 = 0,
 
 /// See `InitOptions.open_flag`
 open_flag: ?*bool = null,
@@ -1331,6 +1336,7 @@ pub fn begin(
     }
 
     self.end_rendering_done = false;
+    self.draw_retained_done = false;
     self.render_stats = .{};
     self.cursor_requested = null;
     self.text_input_rect = null;
@@ -1626,16 +1632,25 @@ pub const endOptions = struct {
     show_toasts: bool = true,
 };
 
-/// Normally this is called for you in `end`, but you can call it separately in
-/// case you want to do something after everything has been rendered.
-pub fn endRendering(self: *Self, opts: endOptions) void {
+/// Draws the things dvui keeps for you between frames: toasts, dialogs and
+/// the debug window.
+///
+/// Normally `endRendering` calls this for you.  Call it yourself, after your
+/// own widgets and before `endRendering`, when you want everything this frame
+/// will draw to exist before any of it reaches the screen.  For example, to
+/// draw some subwindows' commands (`Subwindow.render_cmds`) somewhere else, or
+/// to give them a window of their own.
+pub fn drawRetained(self: *Self, opts: endOptions) void {
+    if (self.draw_retained_done) return;
+    self.draw_retained_done = true;
+
     // Frame phase timing: the build phase ends here and the render phase begins.
     // Close out the event/build phases before the toasts/dialogs/debug below,
     // since those register widgets that must not be taken for the build phase.
-    const render_start = self.backend.nanoTime();
+    self.ft_render_start = self.backend.nanoTime();
     self.ft_awaiting_build = false;
     self.frame_timing_last.events_ns = nsSince(self.ft_build_start, self.ft_events_start);
-    self.frame_timing_last.build_ns = nsSince(render_start, self.ft_build_start);
+    self.frame_timing_last.build_ns = nsSince(self.ft_render_start, self.ft_build_start);
 
     // The build phase is over, so stop capturing the widget tree for
     // `Debug.dumpFrame` before the inspector/dialogs below register widgets.
@@ -1653,6 +1668,15 @@ pub fn endRendering(self: *Self, opts: endOptions) void {
 
     if (self.is_primary)
         dvui.debug.show();
+}
+
+/// Normally this is called for you in `end`, but you can call it separately in
+/// case you want to do something after everything has been rendered.
+///
+/// Calls `drawRetained` first if you have not, then draws every subwindow's
+/// commands, bottom to top.
+pub fn endRendering(self: *Self, opts: endOptions) void {
+    self.drawRetained(opts);
 
     for (self.subwindows.stack.items) |*sw| {
         self.renderCommands(sw.render_cmds.items) catch |err| {
@@ -1669,7 +1693,7 @@ pub fn endRendering(self: *Self, opts: endOptions) void {
     }
 
     self.render_stats_last = self.render_stats;
-    self.frame_timing_last.render_ns = nsSince(self.backend.nanoTime(), render_start);
+    self.frame_timing_last.render_ns = nsSince(self.backend.nanoTime(), self.ft_render_start);
     self.end_rendering_done = true;
 }
 
@@ -2003,6 +2027,50 @@ test "renderStats and frameTiming are populated after a frame" {
     try std.testing.expect(ft.build_ns > 0);
     try std.testing.expect(ft.render_ns > 0);
     try std.testing.expect(ft.total_ns >= ft.build_ns + ft.render_ns);
+}
+
+test "drawRetained draws dialogs once, before any subwindow is drawn" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+
+    const S = struct {
+        var shown: u32 = 0;
+        fn display(id: dvui.Id) anyerror!void {
+            shown += 1;
+            var win = dvui.floatingWindow(@src(), .{}, .{ .id_extra = id.asUsize() });
+            defer win.deinit();
+            dvui.label(@src(), "a dialog", .{}, .{});
+        }
+        fn frame() !dvui.App.Result {
+            return .ok;
+        }
+    };
+
+    const id_mutex = dvui.dialogAdd(null, @src(), 0, S.display);
+    id_mutex.mutex.unlock(dvui.io);
+    try dvui.testing.settle(S.frame);
+
+    // One frame by hand: the app's widgets, then `drawRetained`.
+    const win = dvui.currentWindow();
+    _ = try S.frame();
+    S.shown = 0;
+    win.drawRetained(.{});
+    try std.testing.expectEqual(1, S.shown);
+
+    // The dialog's subwindow is there with its drawing, not drawn yet: the
+    // app can take its commands and draw them somewhere else.
+    var taken: usize = 0;
+    for (win.subwindows.stack.items[1..]) |*sw| {
+        taken += sw.render_cmds.items.len;
+        sw.render_cmds = .empty;
+    }
+    try std.testing.expect(taken > 0);
+
+    // `end` does not draw the dialogs a second time.
+    _ = try win.end(.{});
+    try std.testing.expectEqual(1, S.shown);
+    try win.begin(win.frame_time_ns + 100 * std.time.ns_per_ms);
+    dvui.dialogRemove(id_mutex.id);
 }
 
 test {
