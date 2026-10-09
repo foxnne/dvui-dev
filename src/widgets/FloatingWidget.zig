@@ -70,7 +70,7 @@ pub fn init(self: *FloatingWidget, src: std.builtin.SourceLocation, init_opts: I
             start = start.toSize(ms);
             start.x -= start.w * (1.0 - init_opts.from_gravity_x);
             start.y -= start.h * (1.0 - init_opts.from_gravity_y);
-            self.data().rect = .cast(dvui.placeOnScreen(dvui.windowRect(), .{}, .none, .cast(start)));
+            self.data().rect = .cast(dvui.placeOnScreen(dvui.screenFor(.cast(start)), .{}, .none, .cast(start)));
         } else {
             // need another frame to get our min size
             dvui.refresh(null, @src(), self.data().id);
@@ -88,7 +88,7 @@ pub fn init(self: *FloatingWidget, src: std.builtin.SourceLocation, init_opts: I
         dvui.subwindowAdd(self.data().id, self.data().rect, rs.r, false, self.prev_windowInfo.id, self.init_opts.mouse_events);
         dvui.captureMouseMaintain(.{ .id = self.data().id, .rect = rs.r, .subwindow_id = self.data().id });
         self.prevClip = dvui.clipGet();
-        dvui.clipSet(dvui.windowRectPixels()); // break out of whatever clipping we were in
+        dvui.clipSet(dvui.screenForPixels(.cast(self.data().rect))); // break out of whatever clipping we were in
         self.prev_scroll = dvui.ScrollContainerWidget.scrollSet(null);
     }
 

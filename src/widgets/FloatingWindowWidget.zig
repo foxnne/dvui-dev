@@ -161,7 +161,7 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
             self.auto_size_refresh_prev_value = dvui.currentWindow().extra_frames_needed;
             dvui.currentWindow().extra_frames_needed = 0;
 
-            const ms = Size.min(Size.max(min_size, self.options.min_sizeGet()), .cast(dvui.windowRect().size()));
+            const ms = Size.min(Size.max(min_size, self.options.min_sizeGet()), .cast(dvui.screenFor(.cast(self.wd.rect)).size()));
             self.wd.rect.w = ms.w;
             self.wd.rect.h = ms.h;
         }
@@ -210,7 +210,7 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
         }
 
         // always make sure we are on the screen
-        var screen = dvui.windowRect();
+        var screen = dvui.screenFor(.cast(self.wd.rect));
         // okay if we are off the left or right but still see some
         const offleft = self.wd.rect.w - 48;
         screen.x -= offleft;
@@ -257,7 +257,7 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
         dvui.subwindowAdd(self.data().id, self.data().rect, rs.r, self.init_options.modal, if (self.init_options.stay_above_parent_window) self.prev_windowInfo.id else null, true);
         dvui.captureMouseMaintain(.{ .id = self.data().id, .rect = rs.r, .subwindow_id = self.data().id });
         self.prevClip = dvui.clipGet();
-        dvui.clipSet(dvui.windowRectPixels()); // break out of whatever clipping we were in
+        dvui.clipSet(dvui.screenForPixels(.cast(self.data().rect))); // break out of whatever clipping we were in
         self.prev_scroll = dvui.ScrollContainerWidget.scrollSet(null);
     }
 
@@ -282,7 +282,7 @@ pub fn drawBackground(self: *FloatingWindowWidget) void {
         // paint over everything below
         var col = self.options.color(.text).toColor();
         col.a = self.init_options.modal_alpha orelse (if (dvui.themeGet().dark) 60 else 80);
-        dvui.windowRectPixels().fill(.{}, .{ .color = .{ .color = col } });
+        dvui.screenForPixels(.cast(self.data().rect)).fill(.{}, .{ .color = .{ .color = col } });
     }
 
     // we are using BoxWidget to do border/background
@@ -600,6 +600,31 @@ pub fn deinit(self: *FloatingWindowWidget) void {
         dvui.clipSet(self.prevClip);
         self.render_ftb.deinit();
     }
+}
+
+test "a floating window on another screen (dvui.screensSet) stays on it" {
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 600, .h = 400 } });
+    defer t.deinit();
+
+    const S = struct {
+        var other_screen = true;
+        var rect: Rect = .{ .x = 1100, .y = 50, .w = 200, .h = 100 };
+        fn frame() !dvui.App.Result {
+            if (other_screen) dvui.screensSet(&.{.{ .x = 1000, .y = 0, .w = 400, .h = 300 }});
+            var fw = dvui.floatingWindow(@src(), .{ .rect = &rect }, .{});
+            defer fw.deinit();
+            dvui.label(@src(), "on another screen", .{}, .{});
+            return .ok;
+        }
+    };
+
+    try dvui.testing.settle(S.frame);
+    try std.testing.expectEqual(1100, S.rect.x);
+
+    // Without that screen, it is pulled back onto the window as before.
+    S.other_screen = false;
+    try dvui.testing.settle(S.frame);
+    try std.testing.expect(S.rect.x < 600);
 }
 
 test {

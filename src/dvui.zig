@@ -1186,6 +1186,43 @@ pub fn windowRect() Rect.Natural {
     return .cast(currentWindow().data().rect);
 }
 
+/// Tell dvui about other screens: areas of the window's coordinates that an
+/// app shows as screens of their own, for example parts of the frame it copies
+/// into other OS windows.
+///
+/// A floating widget (floating window, menu, tooltip) whose middle is in one of
+/// them is kept inside it and clipped to it, instead of `windowRect`.  See
+/// `screenFor`.
+///
+/// Call each frame after `Window.begin` and before any floating widget.
+/// `rects` is copied.  Without a call, the only screen is `windowRect`.
+pub fn screensSet(rects: []const Rect.Natural) void {
+    const cw = currentWindow();
+    cw.screens = cw.arena().dupe(Rect.Natural, rects) catch |err| blk: {
+        logError(@src(), err, "Could not set {d} screens", .{rects.len});
+        break :blk &.{};
+    };
+}
+
+/// The screen a floating widget at `r` (natural) is kept on: the one from
+/// `screensSet` holding the middle of `r`, else `windowRect`.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn screenFor(r: Rect.Natural) Rect.Natural {
+    const middle = r.center();
+    for (currentWindow().screens) |s| {
+        if (s.contains(middle)) return s;
+    }
+    return windowRect();
+}
+
+/// `screenFor` in pixels: what a floating widget at `r` (natural) clips to.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn screenForPixels(r: Rect.Natural) Rect.Physical {
+    return windowRectScale().rectToPhysical(.cast(screenFor(r)));
+}
+
 /// Get the OS window size in pixels.  See `windowRect`.
 ///
 /// Pixels is the unit for rendering and user input.
