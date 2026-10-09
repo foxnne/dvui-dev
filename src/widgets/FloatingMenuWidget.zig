@@ -131,12 +131,12 @@ pub fn init(self: *FloatingMenuWidget, src: std.builtin.SourceLocation, init_opt
     }
 
     if (init_opts.from) |fr| {
-        self.data().rect = .cast(dvui.placeOnScreen(dvui.windowRect(), fr, avoid, .cast(self.data().rect)));
+        self.data().rect = .cast(dvui.placeOnScreen(dvui.screenFor(fr), fr, avoid, .cast(self.data().rect)));
     } else {
         const centering: Rect.Natural = dvui.currentWindow().subwindows.current_rect;
         self.wd.rect.x = centering.x + (centering.w - self.wd.rect.w) / 2;
         self.wd.rect.y = centering.y + (centering.h - self.wd.rect.h) / 2;
-        self.wd.rect = .cast(dvui.placeOnScreen(dvui.windowRect(), .{}, .none, .cast(self.data().rect)));
+        self.wd.rect = .cast(dvui.placeOnScreen(dvui.screenFor(centering), .{}, .none, .cast(self.data().rect)));
     }
 
     if (dvui.snapToPixels()) {
@@ -156,7 +156,7 @@ pub fn init(self: *FloatingMenuWidget, src: std.builtin.SourceLocation, init_opt
         dvui.subwindowAdd(self.data().id, self.data().rect, rs.r, self.style == .popup, null, true);
         dvui.captureMouseMaintain(.{ .id = self.data().id, .rect = rs.r, .subwindow_id = self.data().id });
         self.prevClip = dvui.clipGet();
-        dvui.clipSet(dvui.windowRectPixels()); // break out of whatever clipping we were in
+        dvui.clipSet(dvui.screenForPixels(.cast(self.data().rect))); // break out of whatever clipping we were in
         self.prev_scroll = dvui.ScrollContainerWidget.scrollSet(null);
     }
 

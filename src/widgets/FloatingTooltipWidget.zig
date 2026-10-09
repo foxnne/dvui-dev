@@ -148,7 +148,7 @@ pub fn shown(self: *FloatingTooltipWidget) bool {
             .horizontal, .vertical => |o| {
                 const ar = self.init_options.active_rect.toNatural();
                 const r = Rect.Natural.fromPoint(ar.topLeft()).toSize(.cast(self.data().rect.size()));
-                self.data().rect = .cast(dvui.placeOnScreen(dvui.windowRect(), ar, if (o == .horizontal) .horizontal else .vertical, r));
+                self.data().rect = .cast(dvui.placeOnScreen(dvui.screenFor(ar), ar, if (o == .horizontal) .horizontal else .vertical, r));
             },
             .sticky => {
                 if (dvui.firstFrame(self.data().id)) {
@@ -159,7 +159,7 @@ pub fn shown(self: *FloatingTooltipWidget) bool {
                     var r = Rect.Natural.fromPoint(mp).toSize(.cast(self.data().rect.size()));
                     r.x += 10;
                     r.y -= r.h + 10;
-                    self.data().rect = .cast(dvui.placeOnScreen(dvui.windowRect(), .{}, .none, r));
+                    self.data().rect = .cast(dvui.placeOnScreen(dvui.screenFor(r), .{}, .none, r));
                 }
             },
             .absolute => {},
@@ -201,7 +201,7 @@ pub fn install(self: *FloatingTooltipWidget) void {
         dvui.subwindowAdd(self.data().id, self.data().rect, rs.r, false, self.prev_windowInfo.id, true);
         dvui.captureMouseMaintain(.{ .id = self.data().id, .rect = rs.r, .subwindow_id = self.data().id });
         self.prevClip = dvui.clipGet();
-        dvui.clipSet(dvui.windowRectPixels()); // break out of whatever clipping we were in
+        dvui.clipSet(dvui.screenForPixels(.cast(self.data().rect))); // break out of whatever clipping we were in
         self.prev_scroll = dvui.ScrollContainerWidget.scrollSet(null);
     }
 
