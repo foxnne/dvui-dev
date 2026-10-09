@@ -583,7 +583,7 @@ pub fn addTextTooltip(self: *TextLayoutWidget, src: std.builtin.SourceLocation, 
     }, .{ .id_extra = opts.idExtra() });
 
     if (self.addTextHover(text, opts)) |_| {
-        tt.init_options.active_rect = dvui.windowRectPixels();
+        tt.init_options.active_rect = dvui.screenForPixels(.fromPoint(dvui.currentWindow().mouse_pt.toNatural()));
     }
 
     if (tt.shown()) {

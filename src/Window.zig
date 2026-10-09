@@ -14,6 +14,9 @@ backend: dvui.Backend,
 previous_window: ?*Window = null,
 
 subwindows: dvui.Subwindows = .{},
+/// Screens besides the window's own, this frame.  See `dvui.screensSet`.
+/// Uses `arena` allocator.
+screens: []const dvui.Rect.Natural = &.{},
 defer_render_cmds: ?*std.ArrayList(dvui.RenderCommand) = null,
 defer_render_cmds_after: ?*std.ArrayList(dvui.RenderCommand) = null,
 
@@ -1400,6 +1403,7 @@ pub fn begin(
 
     try self.subwindows.add(self.gpa, self.data().id, self.data().rect, self.rect_pixels, false, null, true);
     _ = self.subwindows.setCurrent(self.data().id, .cast(self.data().rect));
+    self.screens = &.{};
 
     self.extra_frames_needed -|= 1;
     self.secs_since_last_frame = @as(f32, @floatFromInt(micros_since_last)) / 1_000_000;
