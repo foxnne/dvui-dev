@@ -35,8 +35,9 @@ pub const ChildOsWindow = struct {
     has_begin: bool = false,
 
     pub fn deinit(self: ChildOsWindow, alloc: std.mem.Allocator) void {
-        self.backend.deinit();
+        // The window first: it gives its textures (font atlases among them) back to its backend.
         self.dvui_win.deinit();
+        self.backend.deinit();
         alloc.destroy(self.backend);
         alloc.destroy(self.dvui_win);
         os_window_count -= 1;
