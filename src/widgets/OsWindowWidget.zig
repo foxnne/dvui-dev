@@ -127,12 +127,22 @@ pub fn osWindowImpl(src: std.builtin.SourceLocation, child_win_opts: OsWindowWid
     return .{ .inner = .{ .os = os_win } };
 }
 
-pub fn osWindowFallback(src: std.builtin.SourceLocation, child_win_opts: OsWindowWidget.InitOptions) OsWindowWidget {
-    const float = dvui.floatingWindow(src, .{}, .{
-        // TODO : review which os_win_opts make sense to "forward"
+pub fn osWindowFallback(src: std.builtin.SourceLocation, child_win_opts: OsWindowWidget.InitOptions, win_opts: Window.InitOptions) OsWindowWidget {
+    // The OS window's size to begin with (centered, as a floating window places itself), its
+    // least and most size, and its close button: the same `open_flag` an OS window's close sets.
+    // Stepped past one already there, as an OS steps a new window past another (`.nudge`).
+    const float = dvui.floatingWindow(src, .{ .open_flag = win_opts.open_flag, .window_avoid = .nudge }, .{
+        .id_extra = win_opts.id_extra,
+        .rect = if (child_win_opts.size) |s| .{ .w = s.w, .h = s.h } else null,
+        .min_size_content = child_win_opts.min_size,
+        .max_size_content = if (child_win_opts.max_size) |s| .{ .w = s.w, .h = s.h } else null,
     });
-    // TODO : deal with close flag somehow. osWindowFallback should have a close button, because an OS window do
-    float.dragAreaSet(dvui.windowHeader(child_win_opts.title orelse "Dvui child window", "", null));
+    const header = dvui.windowHeader(child_win_opts.title orelse "Dvui child window", "", win_opts.open_flag);
+    float.dragAreaSet(header);
+    // Closed by its close button: the next frame, which no longer draws it, comes now.
+    if (win_opts.open_flag) |of| if (!of.*) dvui.refresh(null, @src(), float.data().id);
+    // A backend that shows parts of the frame in OS windows of their own may show this one in one.
+    dvui.currentWindow().backend.osWindowFloating(float.data().id, header, child_win_opts);
     // TODO : deal with Floating window inside the floating window.
     // something is wrong with rendering order, but maybe we want the floating win declared
     // inside an osWindow to not be able to exceed it's boundaries ? Or on the contrary it's nice
