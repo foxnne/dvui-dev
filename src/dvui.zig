@@ -2674,7 +2674,7 @@ pub fn osWindow(src: std.builtin.SourceLocation, os_win_opts: OsWindowWidget.Ini
             return widget;
         };
     // This will be in the same dvui.Window, so win_opts is basically already "applied". Nice.
-    return OsWindowWidget.osWindowFallback(src, os_win_opts);
+    return OsWindowWidget.osWindowFallback(src, os_win_opts, win_opts);
 }
 
 /// Normal widgets seen at the top of `floatingWindow`.  Includes a close

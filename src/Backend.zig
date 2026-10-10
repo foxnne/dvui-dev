@@ -310,6 +310,16 @@ pub fn windowStateSet(self: Backend, window: *dvui.Window, state: dvui.enums.Win
     }
 }
 
+/// A `dvui.osWindow` drawn as a floating window, where the backend makes no OS window of its own
+/// for it (`support_child_os_wins` false): `id` is that floating window, `header` (physical) the
+/// title bar it is moved by. Called each frame it is drawn. A backend that can show part of the
+/// frame in an OS window of its own may show this floating window in one.
+pub fn osWindowFloating(self: Backend, id: dvui.Id, header: dvui.Rect.Physical, opts: dvui.OsWindowWidget.InitOptions) void {
+    if (comptime @hasDecl(Implementation, "osWindowFloating")) {
+        self.impl.osWindowFloating(id, header, opts);
+    }
+}
+
 // We need a comptime support flag per Backend, and the argument type is not obvious at call site so
 // check expectation while we are at it.
 pub const support_child_os_wins = if (@hasDecl(Implementation, "initWindowSecondary"))
