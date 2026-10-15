@@ -252,6 +252,8 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         next_kern_idx += 1;
     }
 
+    const clip = dvui.clipGet();
+
     var i: usize = 0;
     while (i < opts.text.len) {
         const cplen = std.unicode.utf8ByteSequenceLength(opts.text[i]) catch unreachable;
@@ -322,8 +324,14 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             }
         }
 
+        // A glyph wholly outside the clip horizontally can't draw a pixel, and one long line
+        // (minified JSON, say) would otherwise number more vertices than `Vertex.Index` holds.
+        // Everything above still runs, so x, kerning and selection stay exact. Rotation can
+        // swing an off-clip glyph back into view, so rotated text draws every glyph.
+        const off_clip = opts.rotation == 0 and (leftx > clip.x + clip.w or nextx < clip.x);
+
         // don't output triangles for a zero-width glyph (space seems to be the only one)
-        if (gi.w > 0) {
+        if (gi.w > 0 and !off_clip) {
             const vtx_offset: dvui.Vertex.Index = @intCast(builder.vertexes.items.len);
             var v: Vertex = undefined;
 
@@ -771,6 +779,29 @@ const ImageSource = dvui.ImageSource;
 const AccessKit = dvui.AccessKit;
 const StbImageError = dvui.StbImageError;
 const IconRenderOptions = dvui.IconRenderOptions;
+
+test "renderText: a line far wider than the clip draws only what is visible" {
+    // One line of 20k glyphs, almost all of it right of the window. At four vertices a glyph,
+    // that is more than a u16 `Vertex.Index` can number, though only the glyphs in the window
+    // need drawing.
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+
+    const frame = struct {
+        const long: [20_000]u8 = @splat('x');
+        fn frame() !dvui.App.Result {
+            try dvui.renderText(.{
+                .font = dvui.themeGet().font_body,
+                .text = &long,
+                .rs = dvui.windowRectScale(),
+                .color = .black,
+            });
+            return .ok;
+        }
+    }.frame;
+
+    try dvui.testing.settle(frame);
+}
 
 test {
     @import("std").testing.refAllDecls(@This());
