@@ -1262,16 +1262,30 @@ pub fn screensSet(rects: []const Rect.Natural) void {
     };
 }
 
-/// The screen a floating widget at `r` (natural) is kept on: the one from
-/// `screensSet` holding the middle of `r`, else `windowRect`.
+/// The screen a floating widget at `r` (natural) is kept on: the one from `screensSet`, or
+/// `windowRect`, nearest the middle of `r` — holding it, where one does. A menu set off above or
+/// beside what opened it, its middle just past its screen's edge, stays on that screen.
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn screenFor(r: Rect.Natural) Rect.Natural {
     const middle = r.center();
+    var best = windowRect();
+    var best_d = screenDistance(best, middle);
     for (currentWindow().screens) |s| {
-        if (s.contains(middle)) return s;
+        const d = screenDistance(s, middle);
+        if (d < best_d) {
+            best = s;
+            best_d = d;
+        }
     }
-    return windowRect();
+    return best;
+}
+
+/// How far `p` lies outside `s`, squared: 0 inside it.
+fn screenDistance(s: Rect.Natural, p: Point.Natural) f32 {
+    const dx = @max(s.x - p.x, 0, p.x - (s.x + s.w));
+    const dy = @max(s.y - p.y, 0, p.y - (s.y + s.h));
+    return dx * dx + dy * dy;
 }
 
 /// `screenFor` in pixels: what a floating widget at `r` (natural) clips to.
@@ -2753,6 +2767,8 @@ pub fn osWindow(src: std.builtin.SourceLocation, os_win_opts: OsWindowWidget.Ini
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn windowHeader(str: []const u8, right_str: []const u8, openflag: ?*bool) Rect.Physical {
+    // Shown in an OS window of its own: that window's title bar is its header.
+    if (dvui.currentWindow().backend.floatingWindowTitle(dvui.subwindowCurrentId(), str)) return .{};
     var over = dvui.overlay(@src(), .{ .expand = .horizontal, .name = "WindowHeader" });
     const bo = dvui.currentWindow().button_order;
 

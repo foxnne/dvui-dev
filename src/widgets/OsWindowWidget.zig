@@ -137,12 +137,9 @@ pub fn osWindowFallback(src: std.builtin.SourceLocation, child_win_opts: OsWindo
         .min_size_content = child_win_opts.min_size,
         .max_size_content = if (child_win_opts.max_size) |s| .{ .w = s.w, .h = s.h } else null,
     });
-    const header = dvui.windowHeader(child_win_opts.title orelse "Dvui child window", "", win_opts.open_flag);
-    float.dragAreaSet(header);
+    float.dragAreaSet(dvui.windowHeader(child_win_opts.title orelse "Dvui child window", "", win_opts.open_flag));
     // Closed by its close button: the next frame, which no longer draws it, comes now.
     if (win_opts.open_flag) |of| if (!of.*) dvui.refresh(null, @src(), float.data().id);
-    // A backend that shows parts of the frame in OS windows of their own may show this one in one.
-    dvui.currentWindow().backend.osWindowFloating(float.data().id, header, child_win_opts);
     // TODO : deal with Floating window inside the floating window.
     // something is wrong with rendering order, but maybe we want the floating win declared
     // inside an osWindow to not be able to exceed it's boundaries ? Or on the contrary it's nice

@@ -148,6 +148,18 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
         .init_options = init_opts,
     };
 
+    // In an OS window of its own, that window is its frame, and sized within its least and most.
+    if (!init_opts.modal) {
+        var framed = self.options;
+        framed.margin = .{};
+        framed.border = .{};
+        if (dvui.currentWindow().backend.floatingWindowOs(self.wd.id, init_opts.open_flag, framed.min_sizeGet(), framed.max_sizeGet())) {
+            self.init_options.resize = .none;
+            self.options = framed;
+            self.options.corners = .square;
+        }
+    }
+
     // by default we store the rect (only while the window is open)
     self.wd.rect = dvui.dataGet(null, self.wd.id, "_rect", Rect) orelse Rect{};
 

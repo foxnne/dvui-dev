@@ -310,14 +310,26 @@ pub fn windowStateSet(self: Backend, window: *dvui.Window, state: dvui.enums.Win
     }
 }
 
-/// A `dvui.osWindow` drawn as a floating window, where the backend makes no OS window of its own
-/// for it (`support_child_os_wins` false): `id` is that floating window, `header` (physical) the
-/// title bar it is moved by. Called each frame it is drawn. A backend that can show part of the
-/// frame in an OS window of its own may show this floating window in one.
-pub fn osWindowFloating(self: Backend, id: dvui.Id, header: dvui.Rect.Physical, opts: dvui.OsWindowWidget.InitOptions) void {
-    if (comptime @hasDecl(Implementation, "osWindowFloating")) {
-        self.impl.osWindowFloating(id, header, opts);
+/// Asked each frame as floating window `id` (not modal) begins: true if the backend shows it in an
+/// OS window of its own, with that window's title bar, buttons and frame. dvui then draws it
+/// without its own: no border, margin or rounded corners, and no resizing from its edges. The OS
+/// window's close clears `open_flag`, and the OS sizes it within `min` and `max` (natural, its
+/// `min_size_content` and `max_size_content` padded; `dvui.max_float_safe` where it has no most).
+/// False: an ordinary floating window.
+pub fn floatingWindowOs(self: Backend, id: dvui.Id, open_flag: ?*bool, min: dvui.Size, max: dvui.Size) bool {
+    if (comptime @hasDecl(Implementation, "floatingWindowOs")) {
+        return self.impl.floatingWindowOs(id, open_flag, min, max);
     }
+    return false;
+}
+
+/// Asked by `windowHeader` in floating window `id`: true if the backend shows `header` on the OS
+/// window it shows the floating window in (`floatingWindowOs`), and `windowHeader` draws nothing.
+pub fn floatingWindowTitle(self: Backend, id: dvui.Id, header: []const u8) bool {
+    if (comptime @hasDecl(Implementation, "floatingWindowTitle")) {
+        return self.impl.floatingWindowTitle(id, header);
+    }
+    return false;
 }
 
 // We need a comptime support flag per Backend, and the argument type is not obvious at call site so
