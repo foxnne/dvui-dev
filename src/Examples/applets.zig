@@ -579,6 +579,8 @@ pub fn blur() void {
     const stage = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 250 } });
     defer stage.deinit();
 
+    blurBehind();
+
     const backdrop = dvui.BlurBackdrop.get(@src());
 
     _ = dvui.sliderEntry(@src(), "radius: {d:0.1}", .{ .value = &backdrop.radius_px, .min = 2, .max = 20 }, .{ .tag = "blur_radius_slider" });
@@ -609,6 +611,65 @@ pub fn blur() void {
         defer fw.deinit();
         backdrop.draw();
         dvui.label(@src(), "backdrop-filter: blur()", .{}, .{ .color_text = .white, .gravity_x = 0.5, .gravity_y = 0.5 });
+    }
+}
+
+var blur_window_open = false;
+var blur_modal_open = false;
+
+/// What is behind a window, blurred: a floating window frosted over whatever it is dragged over,
+/// and a modal dialog over the whole window blurred. Nothing is bracketed: `BlurBackdrop.behind`
+/// reads back what is under it as its subwindow draws (`dvui.deferRender`).
+pub fn blurBehind() void {
+    _ = dvui.checkbox(@src(), &blur_window_open, "Frosted floating window", .{});
+    if (dvui.button(@src(), "Modal over a blur", .{}, .{})) blur_modal_open = true;
+    if (!dvui.Backend.support_read_pixels) {
+        dvui.label(@src(), "(this backend cannot read back what is drawn)", .{}, .{});
+    }
+
+    if (blur_window_open) {
+        // No fill of its own: the blur is its background, under a tint.
+        var float = dvui.floatingWindow(@src(), .{ .open_flag = &blur_window_open }, .{
+            .min_size_content = .{ .w = 260, .h = 160 },
+            .background = false,
+            .border = .{},
+        });
+        defer float.deinit();
+        const rs = float.data().borderRectScale();
+        const corners: dvui.CornerRect = .all(8 * rs.s);
+        dvui.BlurBackdrop.get(@src()).behind(.cast(dvui.windowRectScale().rectFromPhysical(rs.r)), corners);
+        var tint = dvui.box(@src(), .{}, .{
+            .expand = .both,
+            .background = true,
+            .corners = .all(8),
+            .color_fill = .{ .color = dvui.themeGet().color(.window, .fill).opacity(0.55) },
+        });
+        defer tint.deinit();
+        float.dragAreaSet(dvui.windowHeader("Frosted", "", &blur_window_open));
+        dvui.label(@src(), "Drag me over the demo.", .{}, .{ .margin = .all(8) });
+    }
+
+    if (blur_modal_open) {
+        // The modal's own subwindow is above every other, so its first draw — the whole window
+        // blurred, in place of the modal's dimming — is over all of them, other floating windows
+        // included. Its frame is drawn after that, by hand.
+        var dialog = dvui.floatingWindow(@src(), .{ .modal = true, .modal_alpha = 0, .open_flag = &blur_modal_open }, .{
+            .background = false,
+            .border = .{},
+        });
+        defer dialog.deinit();
+        dvui.BlurBackdrop.get(@src()).behind(dvui.windowRect(), .{});
+        var frame = dvui.box(@src(), .{}, .{
+            .expand = .both,
+            .background = true,
+            .border = .all(1),
+            .corners = .all(5),
+            .style = .window,
+        });
+        defer frame.deinit();
+        dialog.dragAreaSet(dvui.windowHeader("Modal over a blur", "", &blur_modal_open));
+        dvui.label(@src(), "Everything behind this dialog is blurred.", .{}, .{ .margin = .all(8) });
+        if (dvui.button(@src(), "Close", .{}, .{ .gravity_x = 1 })) blur_modal_open = false;
     }
 }
 

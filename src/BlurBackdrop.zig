@@ -47,6 +47,8 @@ small: ?Texture = null,
 dirty: bool = true,
 /// Hash of the last `init`'s `rect` + `witness`, for auto-dirty.
 last_hash: u64 = 0,
+/// The corners `behind` draws with.
+corners: dvui.CornerRect = .{},
 
 cmd_start: usize = undefined,
 prev_rendering: bool = undefined,
@@ -168,16 +170,30 @@ pub fn deinit(self: *BlurBackdrop) void {
         return;
     };
     const prev1 = dvui.renderTarget(.{ .texture = full_target, .offset = r.topLeft() });
-    defer _ = dvui.renderTarget(prev1);
     cw.renderCommands(cmds) catch {
+        _ = dvui.renderTarget(prev1);
         dvui.log.debug("BlurBackdrop: renderCommands failed", .{});
         return;
     };
+    _ = dvui.renderTarget(prev1);
 
-    var cur = dvui.textureFromTarget(full_target) catch { // destroys full_target
+    const cur = dvui.textureFromTarget(full_target) catch { // destroys full_target
         dvui.log.debug("BlurBackdrop: textureFromTarget failed for full_target", .{});
         return;
     };
+    self.blurInto(cur, r);
+}
+
+/// Blur `source` (the content of physical rect `r`, at full size) into `small`, taking ownership
+/// of `source`. Renders immediately through offscreen targets and leaves the current target as
+/// it found it.
+fn blurInto(self: *BlurBackdrop, source: Texture, r: Rect.Physical) void {
+    var cur = source;
+    const blur_prev_rendering = dvui.renderingSet(true);
+    defer _ = dvui.renderingSet(blur_prev_rendering);
+    // Bound to offscreen targets for every pass below, and restored once at the end.
+    const prev1 = dvui.currentWindow().render_target;
+    defer _ = dvui.renderTarget(prev1);
 
     // Each halving pass roughly doubles the effective blur radius in source
     // pixels, so after n halvings the total radius is ~2^n. Inverting that
@@ -301,6 +317,47 @@ pub fn deinit(self: *BlurBackdrop) void {
 
     if (self.small) |old| dvui.textureDestroyLater(old);
     self.small = cur;
+}
+
+/// Blur whatever is drawn under `rect` (natural) and draw it there, with `corners`: the backdrop of
+/// a floating window, or of a modal dialog over the whole window, whatever lies behind it — other
+/// floating windows included. Unlike `init`/`deinit`, nothing is bracketed: the pixels are what the
+/// frame holds when this subwindow's commands replay, after everything under it
+/// (`dvui.deferRender`), read back from the current target (`Backend.readPixels`).
+///
+/// Blurs again every frame, and a read back waits for the GPU, so keep `rect` to what needs it.
+/// Draws nothing where the backend cannot read back (`Backend.support_read_pixels`).
+pub fn behind(self: *BlurBackdrop, rect: Rect.Natural, corners: dvui.CornerRect) void {
+    if (!dvui.Backend.support_read_pixels) return;
+    self.rect = dvui.windowRectScale().rectToPhysical(.cast(rect));
+    self.corners = corners;
+    dvui.deferRender(self, behindDraw);
+}
+
+fn behindDraw(ctx: ?*anyopaque) void {
+    const self: *BlurBackdrop = @ptrCast(@alignCast(ctx.?));
+    const cw = dvui.currentWindow();
+    // Whole pixels, and only what the target holds.
+    const win = dvui.windowRectPixels();
+    const x0 = @max(@floor(self.rect.x), win.x);
+    const y0 = @max(@floor(self.rect.y), win.y);
+    const x1 = @min(@ceil(self.rect.x + self.rect.w), win.x + win.w);
+    const y1 = @min(@ceil(self.rect.y + self.rect.h), win.y + win.h);
+    if (x1 - x0 < 1 or y1 - y0 < 1) return;
+    const r: Rect.Physical = .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+    const w: u32 = @intFromFloat(r.w);
+    const h: u32 = @intFromFloat(r.h);
+
+    const pixels = cw.lifo().alloc(dvui.Color.PMA, w * h) catch return;
+    defer cw.lifo().free(pixels);
+    cw.backend.readPixels(r, @ptrCast(pixels.ptr)) catch return;
+    // Straight alpha in, premultiplied for the texture.
+    for (pixels) |*p| p.* = .fromColor(.{ .r = p.r, .g = p.g, .b = p.b, .a = p.a });
+    const source = dvui.textureCreate(pixels, .{ .width = w, .height = h, .interpolation = .linear }) catch return;
+
+    self.blurInto(source, r);
+    const tex = self.small orelse return;
+    dvui.renderTexture(tex, .{ .r = r }, .{ .corners = self.corners }) catch {};
 }
 
 /// Draw the cached blurred texture over `rect` (set by the last
