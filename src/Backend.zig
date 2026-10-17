@@ -311,14 +311,17 @@ pub fn windowStateSet(self: Backend, window: *dvui.Window, state: dvui.enums.Win
 }
 
 /// Asked each frame as floating window `id` (not modal) begins: true if the backend shows it in an
-/// OS window of its own, with that window's title bar, buttons and frame. dvui then draws it
+/// OS window of its own, with that window's title bar, buttons and frame. `asked`: the floating
+/// window asked for one (`FloatingWindowWidget.InitOptions.os_window`), as `dvui.osWindow`'s does.
+/// A backend shows only those, or every one where the app chose so by the backend's own means.
+/// dvui then draws it
 /// without its own: no border, margin or rounded corners, and no resizing from its edges. The OS
 /// window's close clears `open_flag`, and the OS sizes it within `min` and `max` (natural, its
 /// `min_size_content` and `max_size_content` padded; `dvui.max_float_safe` where it has no most).
 /// False: an ordinary floating window.
-pub fn floatingWindowOs(self: Backend, id: dvui.Id, open_flag: ?*bool, min: dvui.Size, max: dvui.Size) bool {
+pub fn floatingWindowOs(self: Backend, id: dvui.Id, asked: bool, open_flag: ?*bool, min: dvui.Size, max: dvui.Size) bool {
     if (comptime @hasDecl(Implementation, "floatingWindowOs")) {
-        return self.impl.floatingWindowOs(id, open_flag, min, max);
+        return self.impl.floatingWindowOs(id, asked, open_flag, min, max);
     }
     return false;
 }

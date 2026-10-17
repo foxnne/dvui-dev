@@ -130,8 +130,9 @@ pub fn osWindowImpl(src: std.builtin.SourceLocation, child_win_opts: OsWindowWid
 pub fn osWindowFallback(src: std.builtin.SourceLocation, child_win_opts: OsWindowWidget.InitOptions, win_opts: Window.InitOptions) OsWindowWidget {
     // The OS window's size to begin with (centered, as a floating window places itself), its
     // least and most size, and its close button: the same `open_flag` an OS window's close sets.
-    // Stepped past one already there, as an OS steps a new window past another (`.nudge`).
-    const float = dvui.floatingWindow(src, .{ .open_flag = win_opts.open_flag, .window_avoid = .nudge }, .{
+    // Stepped past one already there, as an OS steps a new window past another (`.nudge`). In an
+    // OS window of its own where the backend can show it in one (`os_window`).
+    const float = dvui.floatingWindow(src, .{ .open_flag = win_opts.open_flag, .window_avoid = .nudge, .os_window = true }, .{
         .id_extra = win_opts.id_extra,
         .rect = if (child_win_opts.size) |s| .{ .w = s.w, .h = s.h } else null,
         .min_size_content = child_win_opts.min_size,

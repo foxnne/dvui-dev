@@ -55,6 +55,10 @@ pub const InitOptions = struct {
     /// decides whether to run floating window).
     open_flag: ?*bool = null,
 
+    /// Ask to be shown in an OS window of its own, where the backend can show one
+    /// (`Backend.floatingWindowOs`): `dvui.osWindow`'s floating window does. Not for a modal.
+    os_window: bool = false,
+
     /// Whether to allow resizing the window by dragging the edges/corners.
     resize: Resize = .all,
 
@@ -153,7 +157,7 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
         var framed = self.options;
         framed.margin = .{};
         framed.border = .{};
-        if (dvui.currentWindow().backend.floatingWindowOs(self.wd.id, init_opts.open_flag, framed.min_sizeGet(), framed.max_sizeGet())) {
+        if (dvui.currentWindow().backend.floatingWindowOs(self.wd.id, init_opts.os_window, init_opts.open_flag, framed.min_sizeGet(), framed.max_sizeGet())) {
             self.init_options.resize = .none;
             self.options = framed;
             self.options.corners = .square;
