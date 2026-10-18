@@ -450,6 +450,19 @@ pub fn mouseType() enums.MouseType {
     return currentWindow().mouse_type;
 }
 
+/// What the last pointer event came from: a finger on the screen, or a mouse
+/// (a trackpad included). Use it where touch and a mouse should behave
+/// differently, as a tap that only reveals what a mouse shows on hover.
+///
+/// The same answer for every caller in a frame: it is the window's, set as the
+/// backend adds events. A finger that has lifted hovers nothing: the frame's
+/// `.position` event is then off every window.
+///
+/// Only valid between `Window.begin` and `Window.end`.
+pub fn pointerKind() enums.PointerKind {
+    return currentWindow().pointer_kind;
+}
+
 /// Allocates space for a widget to the alloc stack, or the arena
 /// if the stack overflows.
 ///

@@ -22,6 +22,17 @@ pub const MouseType = enum {
     trackpad,
 };
 
+/// What the last pointer event came from. Set by `Window` from the events a
+/// backend adds: a touch button (`Button.touch0`..`touch9`, from
+/// `Window.addEventPointer` or `Window.addEventTouchMotion`) is `.touch`; mouse
+/// motion, a mouse button or the wheel is `.mouse`. See `dvui.pointerKind`.
+pub const PointerKind = enum {
+    mouse,
+    /// A finger on the screen. A backend adds only direct touches as touch
+    /// buttons: a trackpad's fingers move the mouse, and are not this.
+    touch,
+};
+
 pub const Units = enum {
     /// None is the logical units. It's used for relative placements
     /// and other non-pixel use cases
