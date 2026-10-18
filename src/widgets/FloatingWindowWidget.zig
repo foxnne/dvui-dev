@@ -161,6 +161,9 @@ pub fn init(self: *FloatingWindowWidget, src: std.builtin.SourceLocation, init_o
             self.init_options.resize = .none;
             self.options = framed;
             self.options.corners = .square;
+            // Nor a background: the OS window behind it is its background, as its frame is — the
+            // backend's to fill, and clear where the window lets what is behind it show through.
+            self.options.background = false;
         }
     }
 
