@@ -330,7 +330,25 @@ pub fn drawBackground(self: *FloatingWindowWidget) void {
     // we are using BoxWidget to do border/background
     self.layout = @as(BoxWidget, undefined);
     self.layout.?.init(@src(), .{ .dir = .vertical }, self.options.override(.{ .expand = .both, .name = "Box" }));
+
+    // The backend may draw the background itself (`Backend.floatingWindowBackground`). Where the
+    // box would draw shadow, border, then fill, draw shadow and border, then ask before the fill.
+    const box = self.layout.?.data();
+    const b = box.options.borderGet();
+    if (!box.options.backgroundGet() or box.options.ninepatch(.fill) != null or !(b.x == b.y and b.x == b.w and b.x == b.h)) {
+        self.layout.?.drawBackground();
+        return;
+    }
+    box.options.background = false;
     self.layout.?.drawBackground();
+    box.options.background = true;
+    if (!box.visible()) return;
+    const rs = box.backgroundRectScale();
+    if (rs.r.empty()) return;
+    const corners = box.options.cornersGet().scale(rs.s, dvui.CornerRect.Physical);
+    if (!dvui.currentWindow().backend.floatingWindowBackground(self.data().id, rs.r, corners)) {
+        rs.r.fill(corners, .{ .color = box.options.color(.fill).scale(rs.s), .fade = 1.0 });
+    }
 }
 
 fn dragPart(me: Event.Mouse, rs: RectScale) DragPart {

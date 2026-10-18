@@ -335,6 +335,26 @@ pub fn floatingWindowTitle(self: Backend, id: dvui.Id, header: []const u8) bool 
     return false;
 }
 
+/// Asked by floating window `id` (modal or not) where dvui would fill its background, with that
+/// fill's `rect` and `corners` in physical pixels, while the floating window's own subwindow is
+/// current and before any of its content is drawn: after its box shadow and border, as the fill
+/// would be. True if the backend drew the background itself, or queued it at this point of the
+/// replay (`dvui.deferRender`); dvui then draws no fill. False: dvui fills it with the theme's
+/// `.fill` colour as usual.
+///
+/// Why: a backend can make a floating window of the app window's own material — a blurred or
+/// frosted backdrop of what is under it in the app, or glass — which needs the backend's own
+/// render targets and has to draw at this point in the replay; a plain fill can't express it.
+/// Not asked for a floating window shown in an OS window (`floatingWindowOs`), which draws no
+/// background, nor for one whose background is a ninepatch or whose border is not uniform (dvui
+/// draws those as before).
+pub fn floatingWindowBackground(self: Backend, id: dvui.Id, rect: dvui.Rect.Physical, corners: dvui.CornerRect.Physical) bool {
+    if (comptime @hasDecl(Implementation, "floatingWindowBackground")) {
+        return self.impl.floatingWindowBackground(id, rect, corners);
+    }
+    return false;
+}
+
 // We need a comptime support flag per Backend, and the argument type is not obvious at call site so
 // check expectation while we are at it.
 pub const support_child_os_wins = if (@hasDecl(Implementation, "initWindowSecondary"))
