@@ -19,9 +19,11 @@ subwindows: dvui.Subwindows = .{},
 screens: []const dvui.Rect.Natural = &.{},
 defer_render_cmds: ?*std.ArrayList(dvui.RenderCommand) = null,
 defer_render_cmds_after: ?*std.ArrayList(dvui.RenderCommand) = null,
-/// `render_cmds_after_front` of `defer_render_cmds_after`: how many commands at its
-/// end are closed `RenderFrontToBack` blocks. Null counts as none.
-defer_render_cmds_after_front: ?*usize = null,
+/// Where a closing `RenderFrontToBack` puts its block while drawing is deferred
+/// (a `Picture`, an enclosing `RenderFrontToBack`); drawn after
+/// `defer_render_cmds_after`. Null with `defer_render_cmds_after` set: the
+/// block goes at the start of `defer_render_cmds_after`.
+defer_render_cmds_front: ?*std.ArrayList(dvui.RenderCommand) = null,
 
 last_focused_id_this_frame: Id = .zero,
 last_focused_id_in_subwindow: Id = .zero,
@@ -1508,25 +1510,6 @@ pub fn textInputRequested(self: *const Self) ?Rect.Natural {
     return self.text_input_rect;
 }
 
-/// Where draw-last commands go now: the innermost `RenderFrontToBack` or
-/// `dvui.Picture` recording them, else the current subwindow's `render_cmds_after`.
-pub const AfterQueue = struct {
-    cmds: *std.ArrayList(dvui.RenderCommand),
-    /// How many commands at the end of `cmds` are closed `RenderFrontToBack`
-    /// blocks, which draw-last commands go in before. Null counts as none.
-    front: ?*usize,
-
-    pub fn frontLen(self: AfterQueue) usize {
-        return if (self.front) |f| f.* else 0;
-    }
-};
-
-pub fn afterQueue(self: *Self) AfterQueue {
-    if (self.defer_render_cmds_after) |cmds| return .{ .cmds = cmds, .front = self.defer_render_cmds_after_front };
-    const sw = self.subwindows.current() orelse &self.subwindows.stack.items[0];
-    return .{ .cmds = &sw.render_cmds_after, .front = &sw.render_cmds_after_front };
-}
-
 pub fn addRenderCommand(self: *Self, cmd: dvui.RenderCommand.Command, after: bool) void {
     var sw = self.subwindows.current() orelse &self.subwindows.stack.items[0];
     const render_cmd: dvui.RenderCommand = .{
@@ -1537,9 +1520,7 @@ pub fn addRenderCommand(self: *Self, cmd: dvui.RenderCommand.Command, after: boo
         .cmd = cmd,
     };
     if (after) {
-        // in before the closed RenderFrontToBack blocks, which stay on top
-        const q = self.afterQueue();
-        q.cmds.insert(self.arena(), q.cmds.items.len - q.frontLen(), render_cmd) catch |err| {
+        (self.defer_render_cmds_after orelse &sw.render_cmds_after).append(self.arena(), render_cmd) catch |err| {
             dvui.logError(@src(), err, "Could not append to render_cmds_after", .{});
         };
     } else {
@@ -1718,7 +1699,11 @@ pub fn endRendering(self: *Self, opts: endOptions) void {
         };
         // Set to empty because it's allocated on the arena and will be freed there
         sw.render_cmds_after = .empty;
-        sw.render_cmds_after_front = 0;
+
+        self.renderCommands(sw.render_cmds_front.items) catch |err| {
+            dvui.logError(@src(), err, "Failed to render front-to-back commands for subwindow {x}", .{sw.id});
+        };
+        sw.render_cmds_front = .empty;
     }
 
     self.render_stats_last = self.render_stats;
@@ -2102,7 +2087,7 @@ test "drawRetained draws dialogs once, before any subwindow is drawn" {
     dvui.dialogRemove(id_mutex.id);
 }
 
-test "a closed RenderFrontToBack stays above draw-last strokes, before or after it closed" {
+test "closed RenderFrontToBack blocks are drawn after draw-last strokes, before or after they closed" {
     var t = try dvui.testing.init(.{});
     defer t.deinit();
 
@@ -2112,12 +2097,20 @@ test "a closed RenderFrontToBack stays above draw-last strokes, before or after 
         }
 
         /// A stroke by its thickness, a fill by its left edge
-        fn key(cmd: dvui.RenderCommand) f32 {
-            return switch (cmd.cmd) {
+        fn keys(cmds: []const dvui.RenderCommand) ![]f32 {
+            const out = try std.testing.allocator.alloc(f32, cmds.len);
+            for (cmds, out) |cmd, *k| k.* = switch (cmd.cmd) {
                 .pathStroke => |p| p.opts.thickness,
-                .pathFillConvex => |p| 100 + p.path.points[0].x,
+                .pathFillConvex => |p| @round(p.path.points[0].x),
                 else => -1,
             };
+            return out;
+        }
+
+        fn expectKeys(expected: []const f32, cmds: []const dvui.RenderCommand) !void {
+            const got = try keys(cmds);
+            defer std.testing.allocator.free(got);
+            try std.testing.expectEqualSlices(f32, expected, got);
         }
 
         fn stroke(thickness: f32) void {
@@ -2134,38 +2127,84 @@ test "a closed RenderFrontToBack stays above draw-last strokes, before or after 
 
     const win = dvui.currentWindow();
     const sw = win.subwindows.current() orelse &win.subwindows.stack.items[0];
-    const start = sw.render_cmds_after.items.len;
-    try std.testing.expectEqual(0, sw.render_cmds_after_front);
+    try std.testing.expectEqual(0, sw.render_cmds_after.items.len);
+    try std.testing.expectEqual(0, sw.render_cmds_front.items.len);
 
     S.stroke(1); // a focus ring before the blocks
     {
-        var a: dvui.RenderFrontToBack = undefined;
-        a.init();
-        defer a.deinit();
-        S.fill(10);
+        var block_a: dvui.RenderFrontToBack = undefined;
+        block_a.init();
+        defer block_a.deinit();
+        S.fill(100);
     }
     {
-        var b: dvui.RenderFrontToBack = undefined;
-        b.init();
-        defer b.deinit();
-        S.fill(20);
-        S.stroke(3); // a focus ring inside the block goes with it
+        var block_b: dvui.RenderFrontToBack = undefined;
+        block_b.init();
+        defer block_b.deinit();
+        S.fill(200);
+        {
+            var block_c: dvui.RenderFrontToBack = undefined;
+            block_c.init();
+            defer block_c.deinit();
+            S.fill(300);
+        }
+        S.stroke(3); // b's own focus ring, issued after c closed: under c
     }
     S.stroke(2); // a focus ring after both closed
 
-    var keys: std.ArrayList(f32) = .empty;
-    defer keys.deinit(std.testing.allocator);
-    for (sw.render_cmds_after.items[start..]) |cmd| try keys.append(std.testing.allocator, S.key(cmd));
+    // Draw-last strokes as issued, then the blocks: the last closed first, so
+    // the first is drawn last; inside one, its commands, its own draw-last
+    // commands, then the blocks closed inside it.
+    try S.expectKeys(&.{ 1, 2 }, sw.render_cmds_after.items);
+    try S.expectKeys(&.{ 200, 3, 300, 100 }, sw.render_cmds_front.items);
 
-    // The strokes in the order drawn, then the blocks: the last closed first,
-    // so the first is rendered last (on top).
-    try std.testing.expectEqual(5, keys.items.len);
-    try std.testing.expectEqual(1, keys.items[0]);
-    try std.testing.expectEqual(2, keys.items[1]);
-    try std.testing.expect(keys.items[2] > 100 and keys.items[2] > keys.items[4]); // b's fill
-    try std.testing.expectEqual(3, keys.items[3]); // b's own focus ring
-    try std.testing.expect(keys.items[4] > 100); // a's fill
-    try std.testing.expectEqual(3, sw.render_cmds_after_front);
+    // Deferred, as inside a `Picture` (the testing backend makes no texture
+    // targets, so the queues are installed by hand as `Picture.start` does):
+    // the same order, in the deferred lists.
+    {
+        var normal: std.ArrayList(dvui.RenderCommand) = .empty;
+        var after: std.ArrayList(dvui.RenderCommand) = .empty;
+        var front: std.ArrayList(dvui.RenderCommand) = .empty;
+        win.defer_render_cmds = &normal;
+        win.defer_render_cmds_after = &after;
+        win.defer_render_cmds_front = &front;
+        S.stroke(4);
+        {
+            var block_d: dvui.RenderFrontToBack = undefined;
+            block_d.init();
+            defer block_d.deinit();
+            S.fill(400);
+        }
+        S.stroke(5);
+        try S.expectKeys(&.{ 4, 5 }, after.items);
+        try S.expectKeys(&.{400}, front.items);
+
+        // A queue deferred without a front list (code that predates it): a
+        // block goes at the start of the after list, as it always did.
+        after = .empty;
+        win.defer_render_cmds_front = null;
+        S.stroke(6);
+        {
+            var block_e: dvui.RenderFrontToBack = undefined;
+            block_e.init();
+            defer block_e.deinit();
+            S.fill(500);
+        }
+        try S.expectKeys(&.{ 500, 6 }, after.items);
+
+        win.defer_render_cmds = null;
+        win.defer_render_cmds_after = null;
+    }
+    // nothing deferred went to the subwindow
+    try S.expectKeys(&.{ 1, 2 }, sw.render_cmds_after.items);
+    try S.expectKeys(&.{ 200, 3, 300, 100 }, sw.render_cmds_front.items);
+
+    // Drawn and cleared with the frame
+    _ = try win.end(.{});
+    try win.begin(win.frame_time_ns + 100 * std.time.ns_per_ms);
+    const sw2 = win.subwindows.current() orelse &win.subwindows.stack.items[0];
+    try std.testing.expectEqual(0, sw2.render_cmds_front.items.len);
+    try std.testing.expectEqual(0, sw2.render_cmds_after.items.len);
 }
 
 test {
