@@ -50,6 +50,7 @@ pub const BlurBackdrop = @import("BlurBackdrop.zig");
 pub const Examples = @import("Examples.zig");
 
 pub const Color = @import("Color.zig");
+pub const Material = @import("Material.zig");
 pub const Event = @import("Event.zig");
 pub const Font = @import("Font.zig");
 pub const Options = @import("Options.zig");
@@ -1260,6 +1261,30 @@ pub fn screensSet(rects: []const Rect.Natural) void {
         logError(@src(), err, "Could not set {d} screens", .{rects.len});
         break :blk &.{};
     };
+}
+
+/// What the app's windows are made of, from now on (`Material`): every OS window the backend shows,
+/// and glass drawn in the app (`materialEffective`). `.none`, an opaque window, until set.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn materialSet(m: Material) void {
+    currentWindow().material = m;
+}
+
+/// The material asked for (`materialSet`).
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn material() Material {
+    return currentWindow().material;
+}
+
+/// The material asked for, as the backend can show it (`Material.effective`,
+/// `Backend.materialKinds`): what glass drawn in the app should look like, as the OS windows do.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn materialEffective() Material {
+    const cw = currentWindow();
+    return cw.material.effective(cw.backend.materialKinds());
 }
 
 /// The screen a floating widget at `r` (natural) is kept on: the one from `screensSet`, or

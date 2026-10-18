@@ -335,6 +335,15 @@ pub fn floatingWindowTitle(self: Backend, id: dvui.Id, header: []const u8) bool 
     return false;
 }
 
+/// The kinds of `dvui.Material` this backend can show: only a kind every surface it puts glass on
+/// can show (its OS windows, and its canvas). `none` alone where it has no say.
+pub fn materialKinds(self: Backend) dvui.Material.Kinds {
+    if (comptime @hasDecl(Implementation, "materialKinds")) {
+        return self.impl.materialKinds();
+    }
+    return .{};
+}
+
 // We need a comptime support flag per Backend, and the argument type is not obvious at call site so
 // check expectation while we are at it.
 pub const support_child_os_wins = if (@hasDecl(Implementation, "initWindowSecondary"))

@@ -17,6 +17,8 @@ subwindows: dvui.Subwindows = .{},
 /// Screens besides the window's own, this frame.  See `dvui.screensSet`.
 /// Uses `arena` allocator.
 screens: []const dvui.Rect.Natural = &.{},
+/// What the app's windows are made of. See `dvui.materialSet`.
+material: dvui.Material = .{},
 defer_render_cmds: ?*std.ArrayList(dvui.RenderCommand) = null,
 defer_render_cmds_after: ?*std.ArrayList(dvui.RenderCommand) = null,
 
