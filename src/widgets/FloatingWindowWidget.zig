@@ -541,7 +541,10 @@ pub fn processEventsAfter(self: *FloatingWindowWidget) void {
                         } else {
                             if (self.init_options.resize == .none) continue;
                         }
-                        dvui.cursorSetPriority(dp.cursor(), if (dp == .middle) .normal else .resize);
+                        // At `.normal`: children took a press here first, so the
+                        // edge's arrow must not outrank their cursors. The corner, which
+                        // takes its press before them, asks at `.resize`.
+                        dvui.cursorSet(dp.cursor());
                     },
                     else => {},
                 }
