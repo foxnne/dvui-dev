@@ -48,6 +48,12 @@ event_num: u16 = 0,
 mouse_pt: Point.Physical = .{ .x = -1, .y = -1 },
 mouse_pt_prev: Point.Physical = .{ .x = -1, .y = -1 },
 mouse_type: dvui.enums.MouseType = .unknown,
+/// What the last pointer event came from (`dvui.pointerKind`).
+pointer_kind: dvui.enums.PointerKind = .mouse,
+/// The touch buttons held down, a bit each from `touch0`. After a touch with
+/// none held, the pointer is nowhere: the frame's `.position` event is off
+/// every window, so nothing stays hovered where a finger lifted.
+touches_down: u10 = 0,
 mouse_type_min: [2]f32 = .{ 99999, 99999 },
 mouse_type_last_wheel_ns: i128 = 0,
 /// Holds the current state of the modifiers from the most
@@ -858,6 +864,7 @@ pub fn addEventMouseMotion(self: *Self, opts: AddEventMouseMotionOptions) std.me
     //log.debug("mouse motion {d} {d} -> {d} {d}", .{ x, y, newpt.x, newpt.y });
     const dp = opts.pt.diff(self.mouse_pt);
     self.mouse_pt = opts.pt;
+    self.pointer_kind = if (dvui.debug.touch_simulate_events) .touch else .mouse;
     const winId = self.subwindows.windowFor(self.mouse_pt);
 
     // maybe could do focus follows mouse here
@@ -927,6 +934,18 @@ pub fn addEventPointer(self: *Self, opts: AddEventPointerOptions) std.mem.Alloca
         } else if (opts.action == .release) {
             dvui.debug.touch_simulate_down = false;
         }
+    }
+
+    if (bb.touch()) {
+        self.pointer_kind = .touch;
+        const bit = @as(u10, 1) << @intCast(@intFromEnum(bb) - @intFromEnum(dvui.enums.Button.touch0));
+        switch (opts.action) {
+            .press => self.touches_down |= bit,
+            .release => self.touches_down &= ~bit,
+            else => {},
+        }
+    } else if (bb != .none) {
+        self.pointer_kind = .mouse;
     }
 
     if (opts.xynorm) |xyn| {
@@ -1006,6 +1025,7 @@ pub fn mouseWheelBatch(self: *Self, dir: dvui.enums.Direction, raw_delta: f32) f
 /// calling normal dvui widgets.  end() clears the event list.
 pub fn addEventMouseWheel(self: *Self, ticks: f32, dir: dvui.enums.Direction, mouse_type: ?dvui.enums.MouseType) std.mem.Allocator.Error!bool {
     if (mouse_type) |mt| self.mouse_type = mt;
+    self.pointer_kind = .mouse;
 
     self.positionMouseEventRemove();
 
@@ -1049,6 +1069,7 @@ pub fn addEventTouchMotion(self: *Self, finger: dvui.enums.Button, xnorm: f32, y
     const newpt = (Point{ .x = xnorm * self.data().rect.w, .y = ynorm * self.data().rect.h }).scale(self.natural_scale, Point.Physical);
     //std.debug.print("touch motion {} {d} {d}\n", .{ finger, newpt.x, newpt.y });
     self.mouse_pt = newpt;
+    self.pointer_kind = .touch;
 
     const dp = (Point{ .x = dxnorm * self.data().rect.w, .y = dynorm * self.data().rect.h }).scale(self.natural_scale, Point.Physical);
 
@@ -1469,8 +1490,16 @@ pub fn begin(
     self.ft_awaiting_build = true;
 }
 
+/// Where the `.position` event puts a pointer that is nowhere: a finger that
+/// has lifted. Off every window, so no widget is hovered.
+const pointer_nowhere: Point.Physical = .{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32) };
+
 fn positionMouseEventAdd(self: *Self) std.mem.Allocator.Error!void {
-    const widget_id = self.captureId(self.pointer_last);
+    // A lifted finger hovers nothing, not what it last touched. It goes to no
+    // widget either, the one it pressed included: that would light it up.
+    const nowhere = self.pointer_kind == .touch and self.touches_down == 0;
+    const p = if (nowhere) pointer_nowhere else self.mouse_pt;
+    const widget_id = if (nowhere) null else self.captureId(self.pointer_last);
 
     try self.events.append(self.arena(), .{
         .num = self.event_num + 1,
@@ -1479,8 +1508,8 @@ fn positionMouseEventAdd(self: *Self) std.mem.Allocator.Error!void {
             .action = .position,
             .button = .none,
             .mod = self.modifiers,
-            .p = self.mouse_pt,
-            .floating_win = self.subwindows.windowFor(self.mouse_pt),
+            .p = p,
+            .floating_win = self.subwindows.windowFor(p),
         } },
     });
 }
@@ -2066,6 +2095,64 @@ test "renderStats and frameTiming are populated after a frame" {
     try std.testing.expect(ft.build_ns > 0);
     try std.testing.expect(ft.render_ns > 0);
     try std.testing.expect(ft.total_ns >= ft.build_ns + ft.render_ns);
+}
+
+test "a finger that lifts hovers nothing, and a mouse hovers again" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+
+    const S = struct {
+        var hovered = false;
+        fn frame() !dvui.App.Result {
+            var b: dvui.ButtonWidget = undefined;
+            b.init(@src(), .{}, .{ .tag = "button", .min_size_content = .{ .w = 100, .h = 40 } });
+            b.processEvents();
+            hovered = b.hovered();
+            b.drawBackground();
+            b.deinit();
+            return .ok;
+        }
+    };
+    try dvui.testing.settle(S.frame);
+    const win = dvui.currentWindow();
+
+    try dvui.testing.moveTo("button");
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expect(S.hovered);
+    try std.testing.expectEqual(.mouse, dvui.pointerKind());
+
+    // A finger down on it: under the finger, as a press shows.
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .press });
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expectEqual(.touch, dvui.pointerKind());
+    try std.testing.expect(S.hovered);
+
+    // It lifts: nothing is hovered, that frame or after.
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .release });
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expect(!S.hovered);
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expect(!S.hovered);
+    try std.testing.expectEqual(.touch, dvui.pointerKind());
+
+    // A tap whose press and release come in one frame leaves nothing lit either.
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .press });
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .release });
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expect(!S.hovered);
+
+    // The mouse moves: it hovers again.
+    try dvui.testing.moveTo("button");
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expect(S.hovered);
+    try std.testing.expectEqual(.mouse, dvui.pointerKind());
+
+    // The wheel is a mouse's (or a trackpad's), not a finger's.
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .press });
+    _ = try win.addEventPointer(.{ .button = .touch0, .action = .release });
+    _ = try win.addEventMouseWheel(1, .vertical, null);
+    _ = try dvui.testing.step(S.frame);
+    try std.testing.expectEqual(.mouse, dvui.pointerKind());
 }
 
 test "drawRetained draws dialogs once, before any subwindow is drawn" {
