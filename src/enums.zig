@@ -482,6 +482,21 @@ pub const Cursor = enum(u8) {
     hidden,
 };
 
+/// How strongly a widget asks for its cursor (`dvui.cursorSetPriority`). In a
+/// frame the highest asked wins; between equals, the first.
+pub const CursorPriority = enum(u8) {
+    /// A widget's hover cursor (`dvui.cursorSet`).
+    normal,
+    /// A handle that resizes what is beside it: a splitter's sash, a window's
+    /// edge, a column's border. Its reach overlaps widgets drawn before and
+    /// after it, and where they overlap its cursor is the one that says what a
+    /// press does.
+    resize,
+    /// Something being carried: its cursor says what letting go does.
+    drag,
+    _,
+};
+
 pub const ColorScheme = enum { light, dark };
 
 pub const WindowState = enum { normal, fullscreen, maximize };

@@ -464,7 +464,7 @@ pub fn processEventsBefore(self: *FloatingWindowWidget) void {
                 }
                 if (me.action == .position) {
                     e.handle(@src(), self.data()); // don't want any widgets under this to see a hover
-                    dvui.cursorSet(.arrow_nw_se);
+                    dvui.cursorSetPriority(.arrow_nw_se, .resize);
                     continue;
                 }
             }
@@ -541,7 +541,7 @@ pub fn processEventsAfter(self: *FloatingWindowWidget) void {
                         } else {
                             if (self.init_options.resize == .none) continue;
                         }
-                        dvui.cursorSet(dp.cursor());
+                        dvui.cursorSetPriority(dp.cursor(), if (dp == .middle) .normal else .resize);
                     },
                     else => {},
                 }

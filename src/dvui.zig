@@ -772,13 +772,25 @@ pub fn lastFocusedIdInSubwindow() Id {
     return currentWindow().last_focused_id_in_subwindow;
 }
 
-/// Set cursor the app should use if not already set this frame.
+/// Set cursor the app should use if not already set this frame, at
+/// `.normal` priority (`cursorSetPriority`).
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn cursorSet(cursor: enums.Cursor) void {
+    cursorSetPriority(cursor, .normal);
+}
+
+/// Set the cursor the app should use, unless something asked this frame at
+/// the same priority or higher. A resize handle asks at `.resize`, so its
+/// cursor wins over a hover cursor wherever the two overlap, whichever was
+/// drawn first. Only the cursor: which widget takes a press is unchanged.
+///
+/// Only valid between `Window.begin`and `Window.end`.
+pub fn cursorSetPriority(cursor: enums.Cursor, priority: enums.CursorPriority) void {
     const cw = currentWindow();
-    if (cw.cursor_requested == null) {
+    if (cw.cursor_requested == null or @intFromEnum(priority) > @intFromEnum(cw.cursor_priority)) {
         cw.cursor_requested = cursor;
+        cw.cursor_priority = priority;
     }
 }
 

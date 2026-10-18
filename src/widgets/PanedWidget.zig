@@ -463,7 +463,7 @@ pub fn processEvent(self: *PanedWidget, e: *Event) void {
                     self.split_ratio.* = @max(0.0, @min(1.0, self.split_ratio.*));
                 }
             } else if (e.evt.mouse.action == .position) {
-                dvui.cursorSet(cursor);
+                dvui.cursorSetPriority(cursor, .resize);
             }
         }
     }
