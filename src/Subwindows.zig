@@ -25,9 +25,8 @@ pub const Subwindow = struct {
     render_cmds_after: std.ArrayList(dvui.RenderCommand) = .empty,
     /// Closed `RenderFrontToBack` blocks, drawn after `render_cmds_after` so
     /// they stay above draw-last commands (focus rings) issued outside them.
-    /// The first block closed is first here, and drawn last.
     /// Uses `arena` allocator
-    render_cmds_front: std.ArrayList(dvui.RenderCommand) = .empty,
+    render_cmds_front: dvui.RenderFrontToBack.Blocks = .{},
     used: bool = true,
     modal: bool = false,
     stay_above_parent_window: ?Id = null,
@@ -37,7 +36,7 @@ pub const Subwindow = struct {
 
 pub fn add(self: *Subwindows, gpa: std.mem.Allocator, id: Id, rect: Rect, rect_pixels: Rect.Physical, modal: bool, stay_above_parent_window: ?Id, mouse_events: bool) !void {
     if (self.get(id)) |sw| {
-        if (sw.render_cmds.items.len > 0 or sw.render_cmds_after.items.len > 0 or sw.render_cmds_front.items.len > 0) {
+        if (sw.render_cmds.items.len > 0 or sw.render_cmds_after.items.len > 0 or sw.render_cmds_front.cmds.items.len > 0) {
             dvui.log.warn("subwindowAdd {x} is clearing some drawing commands (did you try to draw between subwindowCurrentSet and subwindowAdd?)\n", .{id});
         }
         // this window was here previously, just update data, so it stays in the same place in the stack
