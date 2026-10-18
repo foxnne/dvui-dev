@@ -23,6 +23,11 @@ pub const Subwindow = struct {
     render_cmds: std.ArrayList(dvui.RenderCommand) = .empty,
     /// Uses `arena` allocator
     render_cmds_after: std.ArrayList(dvui.RenderCommand) = .empty,
+    /// How many commands at the end of `render_cmds_after` are closed
+    /// `RenderFrontToBack` blocks. Draw-last commands go in before them, so a
+    /// block stays on top of a focus ring drawn after it closed. Reset it
+    /// wherever `render_cmds_after` is emptied.
+    render_cmds_after_front: usize = 0,
     used: bool = true,
     modal: bool = false,
     stay_above_parent_window: ?Id = null,
@@ -45,6 +50,7 @@ pub fn add(self: *Subwindows, gpa: std.mem.Allocator, id: Id, rect: Rect, rect_p
 
         sw.render_cmds.clearRetainingCapacity();
         sw.render_cmds_after.clearRetainingCapacity();
+        sw.render_cmds_after_front = 0;
         return;
     }
     // haven't seen this window before
