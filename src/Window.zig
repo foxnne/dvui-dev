@@ -17,14 +17,9 @@ subwindows: dvui.Subwindows = .{},
 /// Screens besides the window's own, this frame.  See `dvui.screensSet`.
 /// Uses `arena` allocator.
 screens: []const dvui.Rect.Natural = &.{},
-defer_render_cmds: ?*std.ArrayList(dvui.RenderCommand) = null,
-defer_render_cmds_after: ?*std.ArrayList(dvui.RenderCommand) = null,
-/// Where a closing `RenderFrontToBack` puts its block while drawing is deferred
-/// (a `Picture`, an enclosing `RenderFrontToBack`), drawn after the after queue
-/// it belongs to. Used only while that queue is `defer_render_cmds_after`: with
-/// another there (code that installed its own queues), the block goes at the
-/// start of `defer_render_cmds_after`, as before there were front lists.
-defer_render_cmds_front: ?dvui.RenderFrontToBack.Deferred = null,
+/// Where drawing is queued instead of the current subwindow's queues while
+/// a `Picture` or `RenderFrontToBack` records it.
+defer_render: ?*dvui.RenderQueues = null,
 
 last_focused_id_this_frame: Id = .zero,
 last_focused_id_in_subwindow: Id = .zero,
@@ -1521,11 +1516,11 @@ pub fn addRenderCommand(self: *Self, cmd: dvui.RenderCommand.Command, after: boo
         .cmd = cmd,
     };
     if (after) {
-        (self.defer_render_cmds_after orelse &sw.render_cmds_after).append(self.arena(), render_cmd) catch |err| {
+        (if (self.defer_render) |q| &q.after else &sw.render_cmds_after).append(self.arena(), render_cmd) catch |err| {
             dvui.logError(@src(), err, "Could not append to render_cmds_after", .{});
         };
     } else {
-        (self.defer_render_cmds orelse &sw.render_cmds).append(self.arena(), render_cmd) catch |err| {
+        (if (self.defer_render) |q| &q.normal else &sw.render_cmds).append(self.arena(), render_cmd) catch |err| {
             dvui.logError(@src(), err, "Could not append to render_cmds", .{});
         };
     }
@@ -1681,31 +1676,26 @@ pub fn drawRetained(self: *Self, opts: endOptions) void {
 }
 
 pub const RenderSubwindowOptions = struct {
-    /// Empty the subwindow's queues once drawn, so nothing draws them again.
+    /// Take the subwindow's queues out before drawing them, so nothing draws
+    /// them again; drawing they queue as they replay (a draw-last stroke from
+    /// a custom draw command) is kept for later.
     take: bool = true,
 };
 
-/// Draw `sw`'s queued commands now, in the order `endRendering` does: its
-/// commands, its draw-last commands, then its closed `RenderFrontToBack`
-/// blocks, the first closed last. For an app that draws some subwindows
-/// somewhere else (see `drawRetained`).
+/// Draw `sw`'s queued commands now, in the order dvui draws queued drawing
+/// (`RenderQueues.render`). For an app that draws some subwindows somewhere
+/// else (see `drawRetained`).
 pub fn renderSubwindow(self: *Self, sw: *dvui.Subwindows.Subwindow, opts: RenderSubwindowOptions) void {
-    self.renderCommands(sw.render_cmds.items) catch |err| {
-        dvui.logError(@src(), err, "Failed to render commands for subwindow {x}", .{sw.id});
-    };
-    self.renderCommands(sw.render_cmds_after.items) catch |err| {
-        dvui.logError(@src(), err, "Failed to render commands after for subwindow {x}", .{sw.id});
-    };
-    var blocks = sw.render_cmds_front.drawOrder();
-    while (blocks.next()) |block| self.renderCommands(block) catch |err| {
-        dvui.logError(@src(), err, "Failed to render front-to-back commands for subwindow {x}", .{sw.id});
-    };
+    const queues: dvui.RenderQueues = .{ .normal = sw.render_cmds, .after = sw.render_cmds_after, .blocks = sw.render_cmds_front };
     if (opts.take) {
         // Set to empty because they are allocated on the arena and will be freed there
         sw.render_cmds = .empty;
         sw.render_cmds_after = .empty;
         sw.render_cmds_front = .{};
     }
+    queues.render(self) catch |err| {
+        dvui.logError(@src(), err, "Failed to render commands for subwindow {x}", .{sw.id});
+    };
 }
 
 /// Normally this is called for you in `end`, but you can call it separately in
@@ -2190,19 +2180,11 @@ test "closed RenderFrontToBack blocks are drawn after draw-last strokes, before 
 
     // Deferred, as inside a `Picture` (the testing backend makes no texture
     // targets, so the queues are installed by hand as `Picture.start` does):
-    // the same order, in the deferred lists.
+    // the same order, in the deferred queues.
     {
-        var normal: std.ArrayList(dvui.RenderCommand) = .empty;
-        var after: std.ArrayList(dvui.RenderCommand) = .empty;
-        var front: dvui.RenderFrontToBack.Blocks = .{};
-        win.defer_render_cmds = &normal;
-        win.defer_render_cmds_after = &after;
-        win.defer_render_cmds_front = .{ .blocks = &front, .after = &after };
-        defer {
-            win.defer_render_cmds = null;
-            win.defer_render_cmds_after = null;
-            win.defer_render_cmds_front = null;
-        }
+        var queues: dvui.RenderQueues = .{};
+        win.defer_render = &queues;
+        defer win.defer_render = null;
         S.stroke(4);
         {
             var block_d: dvui.RenderFrontToBack = undefined;
@@ -2211,26 +2193,23 @@ test "closed RenderFrontToBack blocks are drawn after draw-last strokes, before 
             S.fill(400);
         }
         S.stroke(5);
-        try S.expectKeys(&.{ 4, 5 }, after.items);
-        try S.expectBlocks(&.{400}, &front);
-
-        // Queues installed inside that by code that knows no front list: the
-        // front list there belongs to another after queue, so a block goes at
-        // the start of this one, as before there were front lists.
-        var normal2: std.ArrayList(dvui.RenderCommand) = .empty;
-        var after2: std.ArrayList(dvui.RenderCommand) = .empty;
-        win.defer_render_cmds = &normal2;
-        win.defer_render_cmds_after = &after2;
-        S.stroke(6);
-        {
-            var block_e: dvui.RenderFrontToBack = undefined;
-            block_e.init();
-            defer block_e.deinit();
-            S.fill(500);
-        }
-        try S.expectKeys(&.{ 500, 6 }, after2.items);
-        try S.expectBlocks(&.{400}, &front);
+        try S.expectKeys(&.{ 4, 5 }, queues.after.items);
+        try S.expectBlocks(&.{400}, &queues.blocks);
     }
+
+    // A block with nothing in it adds no block
+    {
+        var empty: dvui.RenderFrontToBack = undefined;
+        empty.init();
+        defer empty.deinit();
+    }
+    {
+        var reset: dvui.RenderFrontToBack = undefined;
+        reset.initReset();
+        defer reset.deinit();
+    }
+    try std.testing.expectEqual(2, sw.render_cmds_front.starts.items.len); // a and b
+
     // nothing deferred went to the subwindow
     try S.expectKeys(&.{ 1, 2 }, sw.render_cmds_after.items);
     try S.expectBlocks(&.{ 200, 3, 350, 300, 100 }, &sw.render_cmds_front);
@@ -2242,6 +2221,24 @@ test "closed RenderFrontToBack blocks are drawn after draw-last strokes, before 
     try std.testing.expectEqual(0, sw.render_cmds_after.items.len);
     try std.testing.expectEqual(0, sw.render_cmds_front.cmds.items.len);
     try std.testing.expectEqual(0, sw.render_cmds_front.starts.items.len);
+
+    // It takes before drawing: what the replay queues (a draw-last stroke from
+    // a custom draw command) stays queued
+    {
+        var block_g: dvui.RenderFrontToBack = undefined;
+        block_g.init();
+        defer block_g.deinit();
+        dvui.deferRender(null, struct {
+            fn draw(_: ?*anyopaque) void {
+                S.stroke(8);
+            }
+        }.draw);
+    }
+    try std.testing.expectEqual(1, sw.render_cmds_front.starts.items.len);
+    win.renderSubwindow(sw, .{});
+    try S.expectKeys(&.{8}, sw.render_cmds_after.items);
+    try std.testing.expectEqual(0, sw.render_cmds_front.cmds.items.len);
+    sw.render_cmds_after = .empty;
 
     // Cleared with the frame
     S.stroke(7);
