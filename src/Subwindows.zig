@@ -23,11 +23,11 @@ pub const Subwindow = struct {
     render_cmds: std.ArrayList(dvui.RenderCommand) = .empty,
     /// Uses `arena` allocator
     render_cmds_after: std.ArrayList(dvui.RenderCommand) = .empty,
-    /// How many commands at the end of `render_cmds_after` are closed
-    /// `RenderFrontToBack` blocks. Draw-last commands go in before them, so a
-    /// block stays on top of a focus ring drawn after it closed. Reset it
-    /// wherever `render_cmds_after` is emptied.
-    render_cmds_after_front: usize = 0,
+    /// Closed `RenderFrontToBack` blocks, drawn after `render_cmds_after` so
+    /// they stay above draw-last commands (focus rings) issued outside them.
+    /// The first block closed is first here, and drawn last.
+    /// Uses `arena` allocator
+    render_cmds_front: std.ArrayList(dvui.RenderCommand) = .empty,
     used: bool = true,
     modal: bool = false,
     stay_above_parent_window: ?Id = null,
@@ -37,7 +37,7 @@ pub const Subwindow = struct {
 
 pub fn add(self: *Subwindows, gpa: std.mem.Allocator, id: Id, rect: Rect, rect_pixels: Rect.Physical, modal: bool, stay_above_parent_window: ?Id, mouse_events: bool) !void {
     if (self.get(id)) |sw| {
-        if (sw.render_cmds.items.len > 0 or sw.render_cmds_after.items.len > 0) {
+        if (sw.render_cmds.items.len > 0 or sw.render_cmds_after.items.len > 0 or sw.render_cmds_front.items.len > 0) {
             dvui.log.warn("subwindowAdd {x} is clearing some drawing commands (did you try to draw between subwindowCurrentSet and subwindowAdd?)\n", .{id});
         }
         // this window was here previously, just update data, so it stays in the same place in the stack
@@ -50,7 +50,7 @@ pub fn add(self: *Subwindows, gpa: std.mem.Allocator, id: Id, rect: Rect, rect_p
 
         sw.render_cmds.clearRetainingCapacity();
         sw.render_cmds_after.clearRetainingCapacity();
-        sw.render_cmds_after_front = 0;
+        sw.render_cmds_front.clearRetainingCapacity();
         return;
     }
     // haven't seen this window before
