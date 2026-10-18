@@ -832,7 +832,7 @@ pub fn colHeader(self: *GridWidget, init_opts: ColHeaderInitOptions, opts: dvui.
                             }
                         }
                     } else if (me.action == .position) {
-                        dvui.cursorSet(.arrow_w_e);
+                        dvui.cursorSetPriority(.arrow_w_e, .resize);
                     }
                 },
                 else => {},

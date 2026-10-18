@@ -144,6 +144,7 @@ child_os_wins: dvui.TrackingAutoHashMap(dvui.Id, dvui.OsWindowWidget.ChildOsWind
 is_primary: bool = true,
 
 cursor_requested: ?dvui.enums.Cursor = null,
+cursor_priority: dvui.enums.CursorPriority = .normal,
 
 wd: WidgetData,
 current_parent: Widget,
@@ -1364,6 +1365,7 @@ pub fn begin(
     self.draw_retained_done = false;
     self.render_stats = .{};
     self.cursor_requested = null;
+    self.cursor_priority = .normal;
     self.text_input_rect = null;
     self.last_focused_id_this_frame = .zero;
     self.last_focused_id_in_subwindow = .zero;
@@ -2132,6 +2134,36 @@ test "a finger that lifts hovers nothing, and a mouse hovers again" {
     _ = try win.addEventMouseWheel(1, .vertical, null);
     _ = try dvui.testing.step(S.frame);
     try std.testing.expectEqual(.mouse, dvui.pointerKind());
+}
+
+test "cursorSetPriority: the higher asked wins, whichever asked first" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+
+    const S = struct {
+        var resize_first = false;
+        fn frame() !dvui.App.Result {
+            if (resize_first) dvui.cursorSetPriority(.arrow_w_e, .resize);
+            dvui.cursorSet(.hand);
+            if (!resize_first) dvui.cursorSetPriority(.arrow_w_e, .resize);
+            dvui.cursorSet(.ibeam);
+            return .ok;
+        }
+    };
+    const win = dvui.currentWindow();
+    _ = try S.frame();
+    try std.testing.expectEqual(.arrow_w_e, win.cursorRequested());
+    _ = try dvui.testing.step(S.frame);
+
+    S.resize_first = true;
+    _ = try S.frame();
+    try std.testing.expectEqual(.arrow_w_e, win.cursorRequested());
+    _ = try dvui.testing.step(S.frame);
+
+    // Between equals, the first; and each frame starts over.
+    dvui.cursorSet(.hand);
+    dvui.cursorSet(.ibeam);
+    try std.testing.expectEqual(.hand, win.cursorRequested());
 }
 
 test "drawRetained draws dialogs once, before any subwindow is drawn" {
