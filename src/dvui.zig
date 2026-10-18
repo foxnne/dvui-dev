@@ -5631,11 +5631,11 @@ pub const Picture = struct {
     /// Uses `arena` allocator
     render_cmds_after: *std.ArrayList(dvui.RenderCommand),
     /// Uses `arena` allocator
-    render_cmds_front: *std.ArrayList(dvui.RenderCommand),
+    render_cmds_front: *RenderFrontToBack.Blocks,
 
     prev_dr_cmds: ?*std.ArrayList(dvui.RenderCommand),
     prev_dr_cmds_after: ?*std.ArrayList(dvui.RenderCommand),
-    prev_dr_cmds_front: ?*std.ArrayList(dvui.RenderCommand),
+    prev_dr_cmds_front: ?RenderFrontToBack.Deferred,
 
     /// Begin recording drawing to the physical pixels in rect (enlarged to pixel boundaries).
     ///
@@ -5661,8 +5661,8 @@ pub const Picture = struct {
         const render_cmds_after = cw.arena().create(std.ArrayList(dvui.RenderCommand)) catch return null;
         render_cmds.* = .empty;
         render_cmds_after.* = .empty;
-        const render_cmds_front = cw.arena().create(std.ArrayList(dvui.RenderCommand)) catch return null;
-        render_cmds_front.* = .empty;
+        const render_cmds_front = cw.arena().create(RenderFrontToBack.Blocks) catch return null;
+        render_cmds_front.* = .{};
 
         var r = rect;
         // enlarge texture to pixels boundaries
@@ -5683,7 +5683,7 @@ pub const Picture = struct {
         // everything looks good, install our render queues
         cw.defer_render_cmds = render_cmds;
         cw.defer_render_cmds_after = render_cmds_after;
-        cw.defer_render_cmds_front = render_cmds_front;
+        cw.defer_render_cmds_front = .{ .blocks = render_cmds_front, .after = render_cmds_after };
 
         return .{
             .r = r,
@@ -5709,7 +5709,8 @@ pub const Picture = struct {
         // force all deferred rendering now
         cw.renderCommands(self.render_cmds.items) catch {};
         cw.renderCommands(self.render_cmds_after.items) catch {};
-        cw.renderCommands(self.render_cmds_front.items) catch {};
+        var blocks = self.render_cmds_front.drawOrder();
+        while (blocks.next()) |block| cw.renderCommands(block) catch {};
 
         _ = dvui.renderTarget(self.prev_target);
     }
@@ -5782,7 +5783,7 @@ pub fn plotXY(src: std.builtin.SourceLocation, init_opts: PlotXYOptions, opts: O
 ///
 /// A closed block is drawn after the draw-last commands (focus rings, `.after`
 /// strokes) outside it, whenever they were issued: it goes in its subwindow's
-/// `render_cmds_front` (or the enclosing block's or `Picture`'s).
+/// `render_cmds_front` (or the enclosing block's or `Picture`'s), `Blocks`.
 ///
 /// Use with overlapping widgets to have event handling match the visual
 /// order (click is handled by the first to run, which will be rendered last
@@ -5793,12 +5794,64 @@ pub const RenderFrontToBack = struct {
     /// Uses `arena` allocator
     render_cmds_after: std.ArrayList(dvui.RenderCommand) = .empty,
     /// Blocks closed inside this one. Uses `arena` allocator
-    render_cmds_front: std.ArrayList(dvui.RenderCommand) = .empty,
+    render_cmds_front: Blocks = .{},
 
     prev_rendering: bool,
     prev_dr_cmds: ?*std.ArrayList(dvui.RenderCommand),
     prev_dr_cmds_after: ?*std.ArrayList(dvui.RenderCommand),
-    prev_dr_cmds_front: ?*std.ArrayList(dvui.RenderCommand),
+    prev_dr_cmds_front: ?RenderFrontToBack.Deferred,
+
+    /// A deferred front list, with the after queue it is drawn after
+    /// (`Window.defer_render_cmds_front`).
+    pub const Deferred = struct {
+        blocks: *Blocks,
+        /// The `Window.defer_render_cmds_after` these blocks are drawn after
+        after: *std.ArrayList(dvui.RenderCommand),
+    };
+
+    /// Closed blocks, in the order they closed: each closing is an append.
+    /// They are drawn the other way round, so the first closed is drawn last.
+    pub const Blocks = struct {
+        /// Every block's commands, one after the other. Uses `arena` allocator
+        cmds: std.ArrayList(dvui.RenderCommand) = .empty,
+        /// Where each block starts in `cmds`. Uses `arena` allocator
+        starts: std.ArrayList(usize) = .empty,
+
+        /// Append a block: its commands, its draw-last commands, then the
+        /// blocks closed inside it, in the order they draw.
+        pub fn add(self: *Blocks, arena: std.mem.Allocator, normal: []const dvui.RenderCommand, after: []const dvui.RenderCommand, inner: *const Blocks) std.mem.Allocator.Error!void {
+            try self.starts.ensureUnusedCapacity(arena, 1);
+            try self.cmds.ensureUnusedCapacity(arena, normal.len + after.len + inner.cmds.items.len);
+            self.starts.appendAssumeCapacity(self.cmds.items.len);
+            self.cmds.appendSliceAssumeCapacity(normal);
+            self.cmds.appendSliceAssumeCapacity(after);
+            var it = inner.drawOrder();
+            while (it.next()) |block| self.cmds.appendSliceAssumeCapacity(block);
+        }
+
+        /// The blocks in the order they draw: the last closed first.
+        pub fn drawOrder(self: *const Blocks) Iterator {
+            return .{ .blocks = self, .i = self.starts.items.len };
+        }
+
+        pub const Iterator = struct {
+            blocks: *const Blocks,
+            i: usize,
+
+            pub fn next(it: *Iterator) ?[]const dvui.RenderCommand {
+                if (it.i == 0) return null;
+                it.i -= 1;
+                const starts = it.blocks.starts.items;
+                const end = if (it.i + 1 < starts.len) starts[it.i + 1] else it.blocks.cmds.items.len;
+                return it.blocks.cmds.items[starts[it.i]..end];
+            }
+        };
+
+        pub fn clearRetainingCapacity(self: *Blocks) void {
+            self.cmds.clearRetainingCapacity();
+            self.starts.clearRetainingCapacity();
+        }
+    };
 
     pub fn init(self: *RenderFrontToBack) void {
         const cw = dvui.currentWindow();
@@ -5810,7 +5863,7 @@ pub const RenderFrontToBack = struct {
         };
         cw.defer_render_cmds = &self.render_cmds;
         cw.defer_render_cmds_after = &self.render_cmds_after;
-        cw.defer_render_cmds_front = &self.render_cmds_front;
+        cw.defer_render_cmds_front = .{ .blocks = &self.render_cmds_front, .after = &self.render_cmds_after };
     }
 
     pub fn initReset(self: *RenderFrontToBack) void {
@@ -5835,24 +5888,31 @@ pub const RenderFrontToBack = struct {
         cw.defer_render_cmds_after = self.prev_dr_cmds_after;
         cw.defer_render_cmds_front = self.prev_dr_cmds_front;
 
-        // The block, in the order a subwindow draws: its commands, its own
-        // draw-last commands, then the blocks closed inside it. It goes at the
-        // start of the front list, so the first block closed is drawn last.
-        const sw = cw.subwindows.current() orelse &cw.subwindows.stack.items[0];
-        const front = cw.defer_render_cmds_front orelse cw.defer_render_cmds_after orelse &sw.render_cmds_front;
-        const n = self.render_cmds.items.len;
-        const n_after = self.render_cmds_after.items.len;
-        if (front.addManyAt(cw.arena(), 0, n + n_after + self.render_cmds_front.items.len)) |block| {
-            @memcpy(block[0..n], self.render_cmds.items);
-            @memcpy(block[n..][0..n_after], self.render_cmds_after.items);
-            @memcpy(block[n + n_after ..], self.render_cmds_front.items);
-        } else |err| {
-            dvui.logError(@src(), err, "RenderFrontToBack could not insert into render_cmds_front", .{});
-        }
+        self.close(cw) catch |err| {
+            dvui.logError(@src(), err, "RenderFrontToBack could not queue its block", .{});
+        };
 
         self.render_cmds.clearAndFree(cw.arena());
         self.render_cmds_after.clearAndFree(cw.arena());
-        self.render_cmds_front.clearAndFree(cw.arena());
+        self.render_cmds_front.cmds.clearAndFree(cw.arena());
+        self.render_cmds_front.starts.clearAndFree(cw.arena());
+    }
+
+    /// Queue this block where the queues now in place say.
+    fn close(self: *RenderFrontToBack, cw: *Window) std.mem.Allocator.Error!void {
+        const arena = cw.arena();
+        const after = cw.defer_render_cmds_after orelse {
+            const sw = cw.subwindows.current() orelse &cw.subwindows.stack.items[0];
+            return sw.render_cmds_front.add(arena, self.render_cmds.items, self.render_cmds_after.items, &self.render_cmds_front);
+        };
+        if (cw.defer_render_cmds_front) |front| if (front.after == after) {
+            return front.blocks.add(arena, self.render_cmds.items, self.render_cmds_after.items, &self.render_cmds_front);
+        };
+        // Queues installed by code that knows no front list: at the start of
+        // its after queue, so the first block closed is drawn last.
+        var block: Blocks = .{};
+        try block.add(arena, self.render_cmds.items, self.render_cmds_after.items, &self.render_cmds_front);
+        try after.insertSlice(arena, 0, block.cmds.items);
     }
 };
 
