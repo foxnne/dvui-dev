@@ -412,6 +412,13 @@ fn dragAdjust(self: *FloatingWindowWidget, p: Point.Natural, dp: Point.Natural, 
     }
 }
 
+/// Moved by its drag area (not resized from an edge): the backend hears of it
+/// (`Backend.floatingWindowDragged`), as it is moved and as it is let go.
+fn dragged(self: *FloatingWindowWidget, pointer: Point.Physical, dropped: bool) void {
+    if (self.drag_part != .middle or self.init_options.modal) return;
+    dvui.currentWindow().backend.floatingWindowDragged(self.data().id, self.data().rect, pointer, dropped);
+}
+
 pub fn processEventsBefore(self: *FloatingWindowWidget) void {
     const rs = self.data().rectScale();
     const evts = dvui.events();
@@ -434,6 +441,7 @@ pub fn processEventsBefore(self: *FloatingWindowWidget) void {
                     if (dvui.dragging(me.p, null)) |dps| {
                         const p = me.p.plus(dvui.dragOffset()).toNatural();
                         self.dragAdjust(p, dps.toNatural(), self.drag_part.?);
+                        self.dragged(me.p, false);
                         // don't need refresh() because we're before drawing
                         // but we changed the rect, so need to upate WidgetData's rect_scale
                         self.wd.rect_scale = self.wd.rectScaleFromParent();
@@ -443,6 +451,7 @@ pub fn processEventsBefore(self: *FloatingWindowWidget) void {
                 }
 
                 if (me.action == .release and me.button.pointer()) {
+                    self.dragged(me.p, true);
                     dvui.captureMouse(null, e.num); // stop drag and capture
                     dvui.dragEnd();
                     e.handle(@src(), self.data());
@@ -515,6 +524,7 @@ pub fn processEventsAfter(self: *FloatingWindowWidget) void {
                     .release => {
                         if (me.button.pointer() and dvui.captured(self.data().id)) {
                             e.handle(@src(), self.data());
+                            self.dragged(me.p, true);
                             dvui.captureMouse(null, e.num); // stop drag and capture
                             dvui.dragEnd();
                         }
@@ -525,6 +535,7 @@ pub fn processEventsAfter(self: *FloatingWindowWidget) void {
                             if (dvui.dragging(me.p, null)) |dps| {
                                 const p = me.p.plus(dvui.dragOffset()).toNatural();
                                 self.dragAdjust(p, dps.toNatural(), self.drag_part.?);
+                                self.dragged(me.p, false);
 
                                 e.handle(@src(), self.data());
                                 dvui.refresh(null, @src(), self.data().id);

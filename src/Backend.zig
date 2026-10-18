@@ -326,6 +326,17 @@ pub fn floatingWindowOs(self: Backend, id: dvui.Id, asked: bool, open_flag: ?*bo
     return false;
 }
 
+/// Floating window `id` (not modal) moved by its drag area, its header: each motion of the drag
+/// (`dropped` false), and as it is let go (`dropped` true). `rect` is where it is now (natural),
+/// `pointer` where the pointer is (physical). A backend with OS windows of its own may carry it past
+/// the window, a picture of it following the pointer over the desktop, and, let go over no window of
+/// the app's, show it in an OS window of its own there (`floatingWindowOs`).
+pub fn floatingWindowDragged(self: Backend, id: dvui.Id, rect: dvui.Rect, pointer: dvui.Point.Physical, dropped: bool) void {
+    if (comptime @hasDecl(Implementation, "floatingWindowDragged")) {
+        self.impl.floatingWindowDragged(id, rect, pointer, dropped);
+    }
+}
+
 /// Asked by `windowHeader` in floating window `id`: true if the backend shows `header` on the OS
 /// window it shows the floating window in (`floatingWindowOs`), and `windowHeader` draws nothing.
 pub fn floatingWindowTitle(self: Backend, id: dvui.Id, header: []const u8) bool {
